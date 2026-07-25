@@ -1,0 +1,35 @@
+From 3fac7405ee1792280cc1346fc2e68f12cf46dcda Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@users.noreply.github.com>
+Date: Fri, 24 Jul 2026 22:32:29 +0900
+Subject: [PATCH] windows-port: always pass -Dtarget to zig (fixes
+ WindowsSdkNotFound on gnu-hosted Windows)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ cmux-tui/crates/ghostty-vt-sys/build.rs | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/cmux-tui/crates/ghostty-vt-sys/build.rs b/cmux-tui/crates/ghostty-vt-sys/build.rs
+index 1102ee5437..2cc3a586be 100644
+--- a/cmux-tui/crates/ghostty-vt-sys/build.rs
++++ b/cmux-tui/crates/ghostty-vt-sys/build.rs
+@@ -43,9 +43,13 @@ fn main() {
+         .arg("-Demit-lib-vt=true")
+         .arg("-Demit-xcframework=false")
+         .arg("-Doptimize=ReleaseFast");
+-    if target != host
+-        && let Some(zig_target) = zig_target_for_rust_target(&target)
+-    {
++    // Local spike patch (2026-07-23): always pass -Dtarget when the rust
++    // target maps to a zig target. Upstream only passes it when target != host,
++    // which breaks on a gnu-hosted Windows toolchain: zig's native default is
++    // the msvc ABI and fails with WindowsSdkNotFound when no Windows SDK is
++    // installed. (`host` is otherwise unused; keep reading it for the log.)
++    let _ = &host;
++    if let Some(zig_target) = zig_target_for_rust_target(&target) {
+         command.arg(format!("-Dtarget={zig_target}"));
+     }
+     // Valgrind's instruction emulation doesn't cover every CPU-native SIMD
+-- 
+2.53.0.windows.2
+

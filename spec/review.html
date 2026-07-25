@@ -1,0 +1,229 @@
+<title>cmux Windows 対応 仕様レビュー</title>
+<style>
+  :root{
+    --bg:#F5F7F7; --panel:#FFFFFF; --ink:#1C252C; --ink-dim:#54646E; --ink-faint:#7E8E96;
+    --line:#D7DFE1; --accent:#0E7C86; --accent-ink:#0B626A; --accent-soft:#E2F0F1;
+    --ok:#2E7D4F; --ok-soft:#E5F2EA; --warn:#A66A1E; --warn-soft:#FBF3E2;
+    --mono:"Cascadia Code","Consolas","SF Mono",ui-monospace,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0F1518; --panel:#151D22; --ink:#E2EAEC; --ink-dim:#95A6AE; --ink-faint:#6E7F87;
+      --line:#273339; --accent:#53C2CB; --accent-ink:#7BD3DA; --accent-soft:#123138;
+      --ok:#5FBF8A; --ok-soft:#15291F; --warn:#D9A75B; --warn-soft:#2B2214;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0F1518; --panel:#151D22; --ink:#E2EAEC; --ink-dim:#95A6AE; --ink-faint:#6E7F87;
+    --line:#273339; --accent:#53C2CB; --accent-ink:#7BD3DA; --accent-soft:#123138;
+    --ok:#5FBF8A; --ok-soft:#15291F; --warn:#D9A75B; --warn-soft:#2B2214;
+  }
+  :root[data-theme="light"]{
+    --bg:#F5F7F7; --panel:#FFFFFF; --ink:#1C252C; --ink-dim:#54646E; --ink-faint:#7E8E96;
+    --line:#D7DFE1; --accent:#0E7C86; --accent-ink:#0B626A; --accent-soft:#E2F0F1;
+    --ok:#2E7D4F; --ok-soft:#E5F2EA; --warn:#A66A1E; --warn-soft:#FBF3E2;
+  }
+  html{background:var(--bg)}
+  body{
+    margin:0; color:var(--ink); background:var(--bg);
+    font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",sans-serif;
+    font-size:15px; line-height:1.75; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px; margin:0 auto; padding:34px 22px 80px}
+  code{font-family:var(--mono); font-size:.86em; background:var(--accent-soft); color:var(--accent-ink);
+    padding:1px 5px; border-radius:4px; word-break:break-all}
+
+  /* header — TUI ステータスバー風 */
+  .statusbar{display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center;
+    font-family:var(--mono); font-size:12px; color:var(--ink-dim);
+    border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:7px 14px; margin-bottom:26px}
+  .statusbar .dot{color:var(--accent)}
+  h1{margin:0 0 4px; font-size:26px; font-weight:750; letter-spacing:.01em; text-wrap:balance}
+  .lede{margin:0 0 14px; color:var(--ink-dim); font-size:14.5px}
+  .chips{display:flex; flex-wrap:wrap; gap:8px; margin:0 0 34px}
+  .chip{font-family:var(--mono); font-size:11.5px; padding:3px 10px; border-radius:99px;
+    border:1px solid var(--line); color:var(--ink-dim); background:var(--panel)}
+  .chip.hot{border-color:var(--accent); color:var(--accent-ink); background:var(--accent-soft); font-weight:600}
+
+  /* pane — 枠+タイトル食い込み */
+  .pane{position:relative; border:1px solid var(--line); border-radius:10px; background:var(--panel);
+    padding:20px 22px 18px; margin:0 0 26px}
+  .pane-title{position:absolute; top:-9px; left:14px; background:var(--panel);
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.08em; color:var(--accent-ink);
+    padding:0 8px; border:1px solid var(--line); border-radius:5px}
+  .pane p{margin:.35em 0; color:var(--ink-dim); font-size:14px}
+
+  /* 要望→方式 */
+  .req-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin-top:6px}
+  .req{border:1px solid var(--line); border-radius:9px; padding:13px 15px; background:var(--bg)}
+  .req .no{font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.1em}
+  .req h3{margin:2px 0 6px; font-size:15px; font-weight:700}
+  .req .how{font-size:13.5px; color:var(--ink-dim)}
+  .req .how b{color:var(--ink); font-weight:650}
+  .req .refs{margin-top:8px; font-family:var(--mono); font-size:10.5px; color:var(--accent-ink)}
+
+  /* 鍵事実 */
+  .fact{display:flex; gap:10px; margin:10px 0; font-size:14px}
+  .fact .mark{flex:none; font-family:var(--mono); font-size:11px; color:var(--accent-ink);
+    border:1px solid var(--line); border-radius:5px; padding:1px 7px; height:fit-content; margin-top:3px; background:var(--accent-soft)}
+  .fact p{margin:0; color:var(--ink-dim)}
+  .fact b{color:var(--ink)}
+
+  /* 決定表 */
+  .tablewrap{overflow-x:auto}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:640px}
+  th{font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--ink-faint);
+    text-align:left; font-weight:600; padding:6px 12px 6px 0; border-bottom:1px solid var(--line)}
+  td{padding:9px 12px 9px 0; border-bottom:1px solid var(--line); vertical-align:top}
+  td.id{font-family:var(--mono); font-size:12px; color:var(--accent-ink); white-space:nowrap; font-weight:600}
+  td.what{font-weight:650; min-width:170px}
+  td.why{color:var(--ink-dim)}
+  tr:last-child td{border-bottom:none}
+
+  /* フェーズ */
+  .phase{display:flex; gap:14px; padding:12px 0; border-bottom:1px dashed var(--line)}
+  .phase:last-child{border-bottom:none}
+  .phase .tag{flex:none; font-family:var(--mono); font-size:12px; font-weight:700; color:var(--accent-ink);
+    background:var(--accent-soft); border-radius:6px; padding:2px 9px; height:fit-content; margin-top:2px}
+  .phase .tag.p3{color:var(--ok); background:var(--ok-soft)}
+  .phase h3{margin:0 0 3px; font-size:14.5px; font-weight:700}
+  .phase .done{margin:0; font-size:13px; color:var(--ink-dim)}
+  .phase .done b{color:var(--ink); font-weight:600}
+
+  /* 未検証 */
+  .pane.warn{border-color:color-mix(in srgb, var(--warn) 45%, var(--line)); background:var(--warn-soft)}
+  .pane.warn .pane-title{color:var(--warn); background:var(--warn-soft)}
+  ol.verify{margin:6px 0 0; padding-left:22px; font-size:13.5px; color:var(--ink-dim)}
+  ol.verify li{margin:5px 0}
+  ol.verify b{color:var(--ink)}
+
+  /* 非スコープ */
+  ul.out{margin:6px 0 0; padding:0; list-style:none; columns:2; column-gap:28px; font-size:13.5px; color:var(--ink-dim)}
+  ul.out li{margin:4px 0; padding-left:18px; text-indent:-18px; break-inside:avoid}
+  ul.out li::before{content:"—"; font-family:var(--mono); color:var(--ink-faint); padding-right:8px}
+  @media (max-width:640px){ ul.out{columns:1} }
+
+  .next{border-left:3px solid var(--accent); padding:4px 0 4px 14px; margin:30px 0 0; font-size:14px; color:var(--ink-dim)}
+  .next b{color:var(--ink)}
+  .files{font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); margin-top:26px; line-height:2}
+</style>
+
+<div class="wrap">
+  <div class="statusbar">
+    <span><span class="dot">●</span> my-cmux / spec-loop</span>
+    <span>Round 0–3 完了(質問9問+司令塔設計2件)</span>
+    <span>2026-07-23</span>
+  </div>
+
+  <h1>cmux Windows 対応 — 仕様レビュー</h1>
+  <p class="lede">macOS 専用 cmux の体験を Windows 11 で得る。決定 D1〜D9 がすべて出揃い、凍結承認待ちの状態です。</p>
+  <div class="chips">
+    <span class="chip hot">状態: 凍結承認待ち</span>
+    <span class="chip">未決事項: 0 件</span>
+    <span class="chip">本命: cmux-tui (Rust)</span>
+    <span class="chip">ビルド検証済: windows-gnu</span>
+  </div>
+
+  <div class="pane">
+    <span class="pane-title">要望 → 実現方式</span>
+    <div class="req-grid">
+      <div class="req">
+        <div class="no">要望 ①</div>
+        <h3>ターミナル多重化</h3>
+        <div class="how"><b>cmux-tui ネイティブ exe</b> を Windows Terminal 上で実行。ビルドは検証済み(回避策2点前提)。</div>
+        <div class="refs">D1 · D4</div>
+      </div>
+      <div class="req">
+        <div class="no">要望 ②</div>
+        <h3>フォルダ/コード閲覧</h3>
+        <div class="how">既存の <b>sidebar_files</b> でフォルダ閲覧 → Enter で <b>micro</b> を新規ターミナルタブ起動。追加実装ゼロ。</div>
+        <div class="refs">D2 · D5</div>
+      </div>
+      <div class="req">
+        <div class="no">要望 ③</div>
+        <h3>HTML 実画面プレビュー</h3>
+        <div class="how">browser pane の既定動作で <b>headful Chrome の実ウィンドウ</b>に表示。<code>o</code> キーで HTML を開く。</div>
+        <div class="refs">D3</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pane">
+    <span class="pane-title">調査で判明した鍵事実(Round 0)</span>
+    <div class="fact"><span class="mark">追い風</span>
+      <p><b>sidebar_files が実装済みだった。</b>フォルダ閲覧・フィルタ・Enter で $EDITOR 起動・<code>o</code> で HTML を browser タブ起動。要望②は「自作」ではなく既存機能+エディタ選定で成立する。</p></div>
+    <div class="fact"><span class="mark">制約</span>
+      <p><b>kitty graphics の検出処理は Unix 専用実装。</b>Windows ではどの端末でも(WezTerm でも)コード修正なしに in-TUI 画像は出ない。→ in-TUI 表示は捨て、headful Chrome に一本化(D3)。</p></div>
+  </div>
+
+  <div class="pane">
+    <span class="pane-title">決定事項 D1–D9</span>
+    <div class="tablewrap">
+    <table>
+      <tr><th>ID</th><th>決定</th><th>一言理由(詳細は decisions.md)</th></tr>
+      <tr><td class="id">D1</td><td class="what">ネイティブのみで go</td><td class="why">windows-gnu ビルド検証済み。WSL2 は完全スコープ外(管理者権限+再起動が必要な上、得るものが薄い)。</td></tr>
+      <tr><td class="id">D2</td><td class="what">コード閲覧 = sidebar_files + CLI エディタ</td><td class="why">既存機能で追加実装ゼロ。TUI 内で完結し cmux 的体験を維持。</td></tr>
+      <tr><td class="id">D3</td><td class="what">HTML = headful Chrome 実ウィンドウ</td><td class="why">既定動作のままで「実画面プレビュー」を直接満たす。kitty 移植はやらない。</td></tr>
+      <tr><td class="id">D4</td><td class="what">端末 = Windows Terminal</td><td class="why">導入済み。D3 により graphics 対応不要になり WezTerm の導入理由が消滅。</td></tr>
+      <tr><td class="id">D5</td><td class="what">エディタ = micro</td><td class="why">Ctrl+S/Ctrl+Q のメモ帳感覚で学習コストほぼゼロ。ハイライト内蔵。winget 導入可。</td></tr>
+      <tr><td class="id">D6</td><td class="what">一点改造・コミット固定</td><td class="why">main(7652d3b)から windows-port ブランチを切り build.rs パッチをコミット。upstream 追従はしない。</td></tr>
+      <tr><td class="id">D7</td><td class="what">release + ランチャ + WT プロファイル</td><td class="why">EDITOR 等はランチャ内設定でシステム環境を汚さない。ワンクリック起動まで作り切る。</td></tr>
+      <tr><td class="id">D8</td><td class="what">upstream 報告 = 任意タスク</td><td class="why">issue 下書き作成まで(完了条件外)。起票判断はユーザー。</td></tr>
+      <tr><td class="id">D9</td><td class="what">フェーズ分割 2a→2d + 3</td><td class="why">ビルド→対話→要望②③→導線→一気通貫、の依存関係順に検証を積み上げる。</td></tr>
+      <tr><td class="id">D10</td><td class="what">README + HTML マニュアル(Phase 3)</td><td class="why">凍結ゲートでのユーザー追加要望。マニュアルは目次アンカーで項目遷移できる単一 HTML。実機検証済みの挙動を書くため最後に作成。</td></tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="pane">
+    <span class="pane-title">フェーズ分割と完了条件(凍結時に ROADMAP.md へ転記)</span>
+    <div class="phase"><span class="tag">2a</span><div>
+      <h3>フォーク固定化 + release ビルド</h3>
+      <p class="done"><b>完了:</b> windows-port ブランチにパッチコミットが存在し、release ビルドが exit 0。ビルド用 PATH なしの新規 PowerShell で <code>cmux-tui.exe --version</code> が exit 0(DLL 依存検証を兼ねる)。</p></div></div>
+    <div class="phase"><span class="tag">2b</span><div>
+      <h3>TUI 対話動作の検証(要望①)</h3>
+      <p class="done"><b>完了:</b> Windows Terminal 上でタブ作成/ペイン分割/フォーカス移動/シェル実行/終了のチェックリストが全項目 pass。</p></div></div>
+    <div class="phase"><span class="tag">2c</span><div>
+      <h3>要望②③の成立</h3>
+      <p class="done"><b>完了:</b> sidebar_files から Enter でファイルが micro で開き編集・保存できる。HTML が Chrome 実ウィンドウに表示される。</p></div></div>
+    <div class="phase"><span class="tag">2d</span><div>
+      <h3>配布導線</h3>
+      <p class="done"><b>完了:</b> Windows Terminal の専用プロファイルから cmux-tui がワンクリック起動する。</p></div></div>
+    <div class="phase"><span class="tag p3">3</span><div>
+      <h3>受け入れ検証・ドキュメント・引き渡し</h3>
+      <p class="done"><b>完了:</b> 要望①②③の一気通貫シナリオ pass。<code>README.md</code> と <code>docs\manual.html</code>(目次リンクで起動/操作/コード閲覧/HTML プレビュー/設定/トラブルシュートへページ内遷移)が実機検証済みの挙動どおりに存在。ROADMAP.md 更新。任意: upstream issue 下書き(D8)。</p></div></div>
+  </div>
+
+  <div class="pane warn">
+    <span class="pane-title">実装時の検証ポイント(未検証 6 点)</span>
+    <ol class="verify">
+      <li><b>TUI 対話動作</b> — スパイクは --version/--help のみ。Windows Terminal 上の描画・入力が最初の関門(Phase 2b)。</li>
+      <li><b>release ビルド</b> — スパイクは debug のみ(Phase 2a)。</li>
+      <li><b>ランタイム DLL 依存</b> — MSYS2 PATH なしの新規シェルで起動確認するまで断定しない(Phase 2a)。</li>
+      <li><b>micro の ConPTY 配下動作</b> — cmux-tui の PTY タブ内での描画・操作(Phase 2c)。</li>
+      <li><b>browser pane の Windows 実動作</b> — Chrome 探索・CDP 接続・<code>o</code> キーの URL 形式(Phase 2c)。</li>
+      <li><b>EDITOR の環境変数継承</b> — ランチャ → cmux-tui → PTY 子プロセスへの伝播(Phase 2c)。</li>
+    </ol>
+  </div>
+
+  <div class="pane">
+    <span class="pane-title">非スコープ(やらないこと)</span>
+    <ul class="out">
+      <li>Swift 本体(macOS アプリ)の移植</li>
+      <li>WSL2 経路(導入・検証とも)</li>
+      <li>kitty graphics の Windows 移植 / WezTerm 導入</li>
+      <li>コードビューア pane の自作(機能追加全般)</li>
+      <li>frontends/web・agent-chat・daemon の利用</li>
+      <li>upstream への追従(rebase)</li>
+      <li>キーバインドのカスタマイズ(tmux 準拠のまま)</li>
+    </ul>
+  </div>
+
+  <p class="next"><b>次のステップ:</b> この内容で凍結を承認すると、spec.md が「凍結済み(2026-07-23)」になり、実装引き継ぎ書 handoff.md(Sonnet 新規セッションで自己完結実行できる形式)を生成します。</p>
+
+  <div class="files">
+    spec:      &lt;project-root&gt;\spec\spec.md<br>
+    decisions: &lt;project-root&gt;\spec\decisions.md<br>
+    roadmap:   &lt;project-root&gt;\ROADMAP.md
+  </div>
+</div>

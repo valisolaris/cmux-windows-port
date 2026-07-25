@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cmux (Windows 対応版) 利用マニュアル</title>
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg:#ffffff; --fg:#1f2430; --muted:#5b6472; --border:#e2e6ec;
+    --card:#f7f8fa; --accent:#2f6fed; --accent-soft:#eaf1ff;
+    --kbd-bg:#eef1f5; --kbd-fg:#1f2430; --kbd-border:#c7ccd6;
+    --code-bg:#f0f2f5; --code-fg:#b3005c; --ok:#1a7f4b; --warn:#9a6b00;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1420; --fg:#dfe4ee; --muted:#95a0b3; --border:#26304a;
+      --card:#161d2e; --accent:#5b9dff; --accent-soft:#16233f;
+      --kbd-bg:#1c2438; --kbd-fg:#dfe4ee; --kbd-border:#39445f;
+      --code-bg:#161d2e; --code-fg:#ff8ac5; --ok:#4bd48a; --warn:#e0b25a;
+    }
+  }
+  *{ box-sizing:border-box; }
+  html{ scroll-behavior:smooth; }
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Segoe UI","Yu Gothic UI",system-ui,sans-serif;
+    line-height:1.7; font-size:16px;
+  }
+  .wrap{ max-width:920px; margin:0 auto; padding:2.2rem 1.3rem 5rem; }
+  header.title{ border-bottom:2px solid var(--border); padding-bottom:1rem; margin-bottom:1.6rem; }
+  header.title h1{ margin:0 0 .3rem; font-size:1.9rem; letter-spacing:.01em; }
+  header.title p{ margin:.2rem 0 0; color:var(--muted); font-size:.95rem; }
+  h2{ font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem; border-top:1px solid var(--border); }
+  h2:first-of-type{ border-top:none; }
+  h3{ font-size:1.08rem; margin:1.4rem 0 .5rem; color:var(--fg); }
+  a{ color:var(--accent); text-decoration:none; }
+  a:hover{ text-decoration:underline; }
+  p,li{ color:var(--fg); }
+  .lead{ color:var(--muted); }
+  code{ background:var(--code-bg); color:var(--code-fg); padding:.1rem .4rem; border-radius:5px;
+        font-family:"Cascadia Code",Consolas,monospace; font-size:.9em; }
+  pre{ background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+       padding:.9rem 1rem; overflow-x:auto; }
+  pre code{ background:none; color:var(--fg); padding:0; }
+  kbd{ background:var(--kbd-bg); color:var(--kbd-fg); border:1px solid var(--kbd-border);
+       border-bottom-width:2px; border-radius:5px; padding:.05rem .4rem; margin:0 .05rem;
+       font-family:"Cascadia Code",Consolas,monospace; font-size:.82em; white-space:nowrap; }
+  .toc{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:1.1rem 1.4rem; }
+  .toc h2{ border:none; margin:0 0 .6rem; padding:0; font-size:1.1rem; }
+  .toc ol{ margin:0; padding-left:1.3rem; columns:2; column-gap:2rem; }
+  .toc li{ margin:.25rem 0; break-inside:avoid; }
+  @media(max-width:600px){ .toc ol{ columns:1; } }
+  table{ border-collapse:collapse; width:100%; margin:.8rem 0 1rem; font-size:.93rem; }
+  th,td{ border:1px solid var(--border); padding:.45rem .7rem; text-align:left; vertical-align:top; }
+  th{ background:var(--accent-soft); font-weight:600; }
+  tbody tr:nth-child(even){ background:var(--card); }
+  td.dash{ color:var(--muted); }
+  .callout{ border-left:4px solid var(--accent); background:var(--card); border-radius:0 8px 8px 0;
+            padding:.7rem 1rem; margin:1rem 0; }
+  .callout.ok{ border-left-color:var(--ok); }
+  .callout.warn{ border-left-color:var(--warn); }
+  .callout p{ margin:.3rem 0; }
+  .callout .tag{ font-weight:700; font-size:.85rem; letter-spacing:.03em; }
+  .callout.ok .tag{ color:var(--ok); }
+  .callout.warn .tag{ color:var(--warn); }
+  .toplink{ display:inline-block; margin:.4rem 0 0; font-size:.82rem; color:var(--muted); }
+  .section-anchor{ scroll-margin-top:1rem; }
+  footer{ margin-top:3rem; padding-top:1.2rem; border-top:1px solid var(--border);
+          color:var(--muted); font-size:.85rem; }
+  .steps{ padding-left:1.2rem; }
+  .steps li{ margin:.4rem 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="title">
+  <h1>cmux(Windows 対応版) 利用マニュアル</h1>
+  <p>Rust 製 TUI マルチプレクサ <code>cmux-tui</code> を Windows 11 で使うための操作ガイドです。本書の内容はすべて Windows 実機で動作確認済みの挙動に基づきます。</p>
+</header>
+
+<nav class="toc section-anchor" id="top" aria-label="目次">
+  <h2>目次</h2>
+  <ol>
+    <li><a href="#launch">起動方法</a></li>
+    <li><a href="#session">共有セッションモデル</a></li>
+    <li><a href="#mux">ターミナル多重化の基本操作(キー表)</a></li>
+    <li><a href="#code">コード閲覧(sidebar_files → micro)</a></li>
+    <li><a href="#preview">HTML プレビュー(<code>o</code> → Chrome)</a></li>
+    <li><a href="#config">設定(cmux-tui.json)</a></li>
+    <li><a href="#trouble">トラブルシュート</a></li>
+  </ol>
+</nav>
+
+<!-- ============ 1. 起動 ============ -->
+<h2 id="launch" class="section-anchor">1. 起動方法</h2>
+<p class="lead">事前準備(release ビルド済み exe の配置・micro の導入・Windows Terminal プロファイル登録)は完了済みです。次のいずれかで起動します。</p>
+
+<h3>A. Windows Terminal の「cmux」プロファイル(推奨)</h3>
+<p>Windows Terminal の新規タブメニュー(タブ右の <kbd>⌄</kbd>)から <strong>cmux</strong> を選ぶだけで起動します。内部でランチャ <code>bin\cmux.ps1</code> を呼び出します。</p>
+
+<h3>B. ランチャを直接実行</h3>
+<pre><code>powershell -NoLogo -ExecutionPolicy Bypass -File &lt;project-root&gt;\bin\cmux.ps1</code></pre>
+<p>ランチャは <code>EDITOR=micro</code> を<strong>このプロセス内だけ</strong>に設定してから <code>cmux-tui.exe</code> を起動します(システム/ユーザー環境変数は変更しません)。micro が PATH に無くても winget のパッケージ配置から版非依存で自動解決します。</p>
+
+<div class="callout ok">
+  <p><span class="tag">✓ 自己完結</span></p>
+  <p><code>bin\cmux-tui.exe</code> は release ビルド済みで、外部 DLL(mingw ランタイム等)に依存しません。PATH が System32 のみでも起動します。</p>
+</div>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<!-- ============ 2. 共有セッション ============ -->
+<h2 id="session" class="section-anchor">2. 共有セッションモデル</h2>
+<p>cmux-tui は tmux と同じ<strong>クライアント/サーバ型</strong>です。セッション名ごとに1つのサーバ(ソケット)が対応します。</p>
+<ul>
+  <li><strong>既定セッション名は <code>main</code></strong>。最初に起動したプロセスが <code>main</code> サーバを立ち上げます。</li>
+  <li><strong>2つ目以降の起動は、同じ <code>main</code> に「クライアント」としてアタッチ</strong>します。複数のウィンドウ/タブから開いても<strong>全員が同じ画面</strong>を共有します(別々の独立画面にはなりません)。</li>
+  <li>ステータス行に接続中のクライアント数(例: <code>2 clients</code>)と、表示サイズ(例: <code>120x30 min</code>)が出ます。<strong>表示は最も小さいクライアントのサイズに合わせて縮む</strong>ため、片方のウィンドウが小さいと全体がそれに合わせられます。</li>
+  <li>アタッチを外す(デタッチ)は <kbd>Ctrl+B</kbd> → <kbd>d</kbd>。サーバとセッションは残り、後からまたアタッチできます。</li>
+</ul>
+
+<h3>独立した別セッションを持ちたいとき</h3>
+<p><code>--session &lt;名&gt;</code> を付けて起動すると、<code>main</code> とは別のサーバ(別ソケット)になり、独立した画面になります。</p>
+<pre><code>powershell -NoLogo -ExecutionPolicy Bypass -File ...\bin\cmux.ps1 --session work</code></pre>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<!-- ============ 3. 多重化キー表 ============ -->
+<h2 id="mux" class="section-anchor">3. ターミナル多重化の基本操作(キー表)</h2>
+
+<div class="callout">
+  <p><span class="tag">押し方の基本</span></p>
+  <p><strong>prefix = <kbd>Ctrl+B</kbd></strong>。prefix 経由の操作は、まず <kbd>Ctrl+B</kbd> を押して離し、続けて対象キーを押します(tmux と同じ2段階)。</p>
+  <p><strong>Alt 系はモードレス</strong>: <kbd>Alt</kbd>+キーは prefix なしでそのまま効きます。大文字表記(<kbd>X</kbd>・<kbd>B</kbd>・<kbd>S</kbd>・<kbd>W</kbd>)は <kbd>Shift</kbd> 併用の意味です。</p>
+</div>
+
+<h3>タブ</h3>
+<table>
+  <thead><tr><th>操作</th><th>prefix 経由</th><th>Alt モードレス</th></tr></thead>
+  <tbody>
+    <tr><td>新規タブ (new-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>t</kbd></td><td><kbd>Alt+t</kbd></td></tr>
+    <tr><td>新規ブラウザタブ (new-browser-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+b</kbd></td><td class="dash">—</td></tr>
+    <tr><td>次のタブ (next-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Tab</kbd></td><td class="dash">—</td></tr>
+    <tr><td>前のタブ (prev-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+Tab</kbd></td><td class="dash">—</td></tr>
+    <tr><td>タブを閉じる (close-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+x</kbd></td><td class="dash">—</td></tr>
+  </tbody>
+</table>
+
+<h3>ペイン</h3>
+<table>
+  <thead><tr><th>操作</th><th>prefix 経由</th><th>Alt モードレス</th></tr></thead>
+  <tbody>
+    <tr><td>スマート分割/新ペイン (new-pane-smart)</td><td class="dash">—</td><td><kbd>Alt+n</kbd></td></tr>
+    <tr><td>右に分割 (split-right)</td><td><kbd>Ctrl+B</kbd> → <kbd>%</kbd></td><td class="dash">—</td></tr>
+    <tr><td>下に分割 (split-down)</td><td><kbd>Ctrl+B</kbd> → <kbd>"</kbd></td><td class="dash">—</td></tr>
+    <tr><td>ペインを閉じる (close-pane)</td><td><kbd>Ctrl+B</kbd> → <kbd>x</kbd></td><td class="dash">—</td></tr>
+    <tr><td>ペイン最大化トグル (zoom-pane)</td><td><kbd>Ctrl+B</kbd> → <kbd>z</kbd></td><td class="dash">—</td></tr>
+    <tr><td>ペインを前へ入れ替え (swap-pane-prev)</td><td><kbd>Ctrl+B</kbd> → <kbd>{</kbd></td><td class="dash">—</td></tr>
+    <tr><td>ペインを後へ入れ替え (swap-pane-next)</td><td><kbd>Ctrl+B</kbd> → <kbd>}</kbd></td><td class="dash">—</td></tr>
+    <tr><td>ペイン拡大 (resize-grow)</td><td class="dash">—</td><td><kbd>Alt+=</kbd></td></tr>
+    <tr><td>ペイン縮小 (resize-shrink)</td><td class="dash">—</td><td><kbd>Alt+-</kbd></td></tr>
+    <tr><td>スクロールアップ (scroll-up)</td><td><kbd>Ctrl+B</kbd> → <kbd>[</kbd> または <kbd>PageUp</kbd></td><td class="dash">—</td></tr>
+    <tr><td>スクロールダウン (scroll-down)</td><td><kbd>Ctrl+B</kbd> → <kbd>PageDown</kbd></td><td class="dash">—</td></tr>
+  </tbody>
+</table>
+
+<h3>フォーカス移動</h3>
+<table>
+  <thead><tr><th>操作</th><th>prefix 経由</th><th>Alt モードレス</th></tr></thead>
+  <tbody>
+    <tr><td>左のペインへ (focus-left)</td><td><kbd>Ctrl+B</kbd> → <kbd>h</kbd> または <kbd>←</kbd></td><td><kbd>Alt+h</kbd> / <kbd>Alt+←</kbd></td></tr>
+    <tr><td>右のペインへ (focus-right)</td><td><kbd>Ctrl+B</kbd> → <kbd>l</kbd> または <kbd>→</kbd></td><td><kbd>Alt+l</kbd> / <kbd>Alt+→</kbd></td></tr>
+    <tr><td>上のペインへ (focus-up)</td><td><kbd>Ctrl+B</kbd> → <kbd>k</kbd> または <kbd>↑</kbd></td><td><kbd>Alt+k</kbd> / <kbd>Alt+↑</kbd></td></tr>
+    <tr><td>下のペインへ (focus-down)</td><td><kbd>Ctrl+B</kbd> → <kbd>j</kbd> または <kbd>↓</kbd></td><td><kbd>Alt+j</kbd> / <kbd>Alt+↓</kbd></td></tr>
+    <tr><td>次のペインへ巡回 (focus-next-pane)</td><td><kbd>Ctrl+B</kbd> → <kbd>o</kbd></td><td class="dash">—</td></tr>
+    <tr><td>サイドバーへフォーカス (focus-sidebar)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd></td><td class="dash">—</td></tr>
+  </tbody>
+</table>
+
+<h3>サイドバー</h3>
+<table>
+  <thead><tr><th>操作</th><th>prefix 経由</th></tr></thead>
+  <tbody>
+    <tr><td>サイドバー表示トグル (toggle-sidebar)</td><td><kbd>Ctrl+B</kbd> → <kbd>s</kbd></td></tr>
+    <tr><td>サイドバーのビュー切替 (toggle-sidebar-view)</td><td><kbd>Ctrl+B</kbd> → <kbd>e</kbd></td></tr>
+    <tr><td>サイドバーへフォーカス (focus-sidebar)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd></td></tr>
+  </tbody>
+</table>
+
+<h3>スクリーン / ワークスペース</h3>
+<table>
+  <thead><tr><th>操作</th><th>prefix 経由</th><th>Alt モードレス</th></tr></thead>
+  <tbody>
+    <tr><td>新規スクリーン (new-screen)</td><td><kbd>Ctrl+B</kbd> → <kbd>c</kbd></td><td class="dash">—</td></tr>
+    <tr><td>前のスクリーン (prev-screen)</td><td><kbd>Ctrl+B</kbd> → <kbd>p</kbd></td><td><kbd>Alt+[</kbd></td></tr>
+    <tr><td>次のスクリーン (next-screen)</td><td><kbd>Ctrl+B</kbd> → <kbd>n</kbd></td><td><kbd>Alt+]</kbd></td></tr>
+    <tr><td>スクリーン 1〜9 を選択 (select-screen-N)</td><td><kbd>Ctrl+B</kbd> → <kbd>1</kbd>〜<kbd>9</kbd></td><td class="dash">—</td></tr>
+    <tr><td>スクリーン 0 を選択 (select-screen-0)</td><td><kbd>Ctrl+B</kbd> → <kbd>0</kbd></td><td class="dash">—</td></tr>
+    <tr><td>スクリーン名変更 (rename-screen)</td><td><kbd>Ctrl+B</kbd> → <kbd>,</kbd></td><td class="dash">—</td></tr>
+    <tr><td>スクリーンを閉じる (close-screen)</td><td><kbd>Ctrl+B</kbd> → <kbd>&amp;</kbd></td><td class="dash">—</td></tr>
+    <tr><td>次のワークスペース (next-workspace)</td><td><kbd>Ctrl+B</kbd> → <kbd>w</kbd></td><td class="dash">—</td></tr>
+    <tr><td>新規ワークスペース (new-workspace)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+w</kbd></td><td class="dash">—</td></tr>
+    <tr><td>ワークスペース名変更 (rename-workspace)</td><td><kbd>Ctrl+B</kbd> → <kbd>$</kbd></td><td class="dash">—</td></tr>
+  </tbody>
+</table>
+
+<h3>ブラウザペイン操作 / その他</h3>
+<table>
+  <thead><tr><th>操作</th><th>prefix 経由</th></tr></thead>
+  <tbody>
+    <tr><td>戻る (browser-back)</td><td><kbd>Ctrl+B</kbd> → <kbd>&lt;</kbd></td></tr>
+    <tr><td>進む (browser-forward)</td><td><kbd>Ctrl+B</kbd> → <kbd>&gt;</kbd></td></tr>
+    <tr><td>再読み込み (browser-reload)</td><td><kbd>Ctrl+B</kbd> → <kbd>r</kbd></td></tr>
+    <tr><td>URL を編集 (browser-edit-url)</td><td><kbd>Ctrl+B</kbd> → <kbd>u</kbd></td></tr>
+    <tr><td>デタッチ (detach)</td><td><kbd>Ctrl+B</kbd> → <kbd>d</kbd></td></tr>
+  </tbody>
+</table>
+<p class="lead">全キーの一覧は <code>docs\keybindings.md</code>(コードから抽出した実物)にもあります。</p>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<!-- ============ 4. コード閲覧 ============ -->
+<h2 id="code" class="section-anchor">4. コード閲覧(sidebar_files → micro)</h2>
+<p>ファイルサイドバー <code>sidebar_files</code> でフォルダをたどり、ファイルを CLI エディタ <strong>micro</strong> で開きます。cmux-tui 内で完結します。</p>
+
+<h3>手順</h3>
+<ol class="steps">
+  <li>サイドバーを開く: <kbd>Ctrl+B</kbd> → <kbd>s</kbd>(表示されていなければ)。ファイルビューでなければ <kbd>Ctrl+B</kbd> → <kbd>e</kbd> でビュー切替。</li>
+  <li>サイドバーにフォーカス: <kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd>。</li>
+  <li>目的のフォルダ/ファイルへ移動して選択を開く(<kbd>Enter</kbd>)。ファイルなら <code>$EDITOR</code>(=micro)が新規ペインで開きます。</li>
+  <li>micro で編集 → <kbd>Ctrl+S</kbd> で保存 → <kbd>Ctrl+Q</kbd> で閉じる。</li>
+</ol>
+
+<h3>サイドバー内のキー(フォーカスがあるとき・prefix 不要)</h3>
+<table>
+  <thead><tr><th>キー</th><th>動作</th></tr></thead>
+  <tbody>
+    <tr><td><kbd>↑</kbd> / <kbd>Ctrl+k</kbd></td><td>選択を1つ上へ</td></tr>
+    <tr><td><kbd>↓</kbd> / <kbd>Ctrl+j</kbd></td><td>選択を1つ下へ</td></tr>
+    <tr><td><kbd>→</kbd></td><td>選択中のディレクトリに入る</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>選択を開く(ディレクトリ=移動、ファイル=<code>$EDITOR</code> で新規ペイン)</td></tr>
+    <tr><td><kbd>←</kbd> / <kbd>h</kbd></td><td>親ディレクトリへ</td></tr>
+    <tr><td><kbd>.</kbd></td><td>隠しファイルの表示トグル</td></tr>
+    <tr><td><kbd>/</kbd></td><td>フィルタ(絞り込み)モード開始</td></tr>
+    <tr><td><kbd>~</kbd></td><td>表示ルートを再設定(reroot)</td></tr>
+    <tr><td><kbd>c</kbd></td><td>選択ディレクトリへの <code>cd</code> をフォーカスペインへ送る</td></tr>
+    <tr><td><kbd>o</kbd></td><td>選択した <code>.html</code> / <code>.md</code> をブラウザタブで開く</td></tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <p><span class="tag">! micro が開かない場合</span></p>
+  <p>ランチャ(<code>bin\cmux.ps1</code>)経由で起動していれば <code>EDITOR</code> は自動解決されます。<code>cmux-tui.exe</code> を直接起動すると <code>EDITOR</code> 未設定で <code>vi</code> にフォールバックし Windows では破綻します。必ずランチャ経由で起動してください。</p>
+</div>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<!-- ============ 5. HTML プレビュー ============ -->
+<h2 id="preview" class="section-anchor">5. HTML プレビュー(<code>o</code> → Chrome)</h2>
+<p>サイドバーで <code>.html</code> / <code>.md</code> を選び <kbd>o</kbd> を押すと、<strong>headful Chrome の実ウィンドウ</strong>にページが表示されます。</p>
+
+<h3>手順</h3>
+<ol class="steps">
+  <li>サイドバーにフォーカス(<kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd>)。</li>
+  <li>プレビューしたい <code>.html</code>(例 <code>samples\preview-test.html</code>)を選択。</li>
+  <li><kbd>o</kbd> を押す → Chrome の実ウィンドウが開いてページを表示。</li>
+</ol>
+
+<div class="callout ok">
+  <p><span class="tag">✓ TUI 側の「no kitty graphics」表示は正常</span></p>
+  <p>cmux-tui の browser ペイン内には <code>terminal has no kitty graphics support</code> というメッセージが出ますが、これは<strong>仕様どおりの正常動作</strong>です。Windows Terminal は画像描画(kitty graphics protocol)に非対応で、本構成では画像を TUI 内に出さず Chrome の実ウィンドウに表示する方針です。実際のプレビューは Chrome ウィンドウ側で確認してください。</p>
+</div>
+<p class="lead">ローカルファイルは <code>file:///C:/…</code> 形式の URL で開かれます(Chrome のアドレスバーで確認できます)。</p>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<!-- ============ 6. 設定 ============ -->
+<h2 id="config" class="section-anchor">6. 設定(cmux-tui.json)</h2>
+<p>設定ファイルは次の場所です(存在しなければ既定で動作します。作成すると上書きできます):</p>
+<pre><code>%APPDATA%\cmux\cmux-tui.json</code></pre>
+<p>環境変数 <code>CMUX_TUI_CONFIG</code> で別パスを指定することもできます。</p>
+
+<h3>キーバインドの変更(keys セクション)</h3>
+<p><code>keys</code> セクションで prefix や各アクションのキーを上書きできます。値は文字列(単一)か文字列の配列(複数割り当て)です。</p>
+<pre><code>{
+  "keys": {
+    "prefix": "ctrl+b",
+    "alt_shortcuts": true,
+    "new-tab": ["t", "alt+t"],
+    "next-tab": "tab",
+    "prev-tab": "backtab",
+    "browser-edit-url": "u"
+  }
+}</code></pre>
+<ul>
+  <li><code>"prefix"</code>: prefix キー(既定 <code>ctrl+b</code>)。</li>
+  <li><code>"alt_shortcuts": false</code> にすると <kbd>Alt</kbd> 系モードレスを一括で無効化できます。</li>
+  <li>アクション名(<code>new-tab</code> 等)は「3. キー表」の括弧内の英名と対応します。</li>
+</ul>
+<div class="callout">
+  <p><span class="tag">補足</span></p>
+  <p>設定は起動時に読み込まれます。変更したら cmux-tui を再起動してください。</p>
+</div>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<!-- ============ 7. トラブルシュート ============ -->
+<h2 id="trouble" class="section-anchor">7. トラブルシュート</h2>
+
+<table>
+  <thead><tr><th>症状</th><th>対処</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>ファイルを <kbd>Enter</kbd> で開いても micro が起動しない</td>
+      <td>ランチャ <code>bin\cmux.ps1</code> 経由で起動しているか確認。直接 exe を起動していると <code>EDITOR</code> 未設定になります。micro 自体が無ければ <code>winget install --id zyedidia.micro -e</code> で導入。</td>
+    </tr>
+    <tr>
+      <td><kbd>o</kbd> を押しても Chrome にページが出ない / 真っ白</td>
+      <td>Chrome がインストールされているか確認。別ブラウザを使う場合は設定の <code>browser.chrome_binary</code> に実行ファイルのフルパスを指定します。詳細な CDP のやり取りを見たいときは <code>bin\cmux-debug.ps1</code> で起動するとトレースがログに残ります。</td>
+    </tr>
+    <tr>
+      <td>browser ペインに「no kitty graphics support」と出る</td>
+      <td><strong>正常</strong>です(「5. HTML プレビュー」参照)。プレビューは Chrome の実ウィンドウ側に表示されます。</td>
+    </tr>
+    <tr>
+      <td>起動直後にプロンプトへ <code>[?61;…c</code> のような文字が漏れる</td>
+      <td>windows-port の <code>graphics.rs</code> パッチ(<code>1b5369b</code>)で解消済みです。出る場合は <code>bin\cmux-tui.exe</code> がパッチ適用済みの release ビルドか確認してください。</td>
+    </tr>
+    <tr>
+      <td>2つ目のウィンドウを開いたら画面が同じ/サイズが縮んだ</td>
+      <td>仕様です。同名セッション(既定 <code>main</code>)は共有され、表示は最小クライアントに合わせます。独立させたいときは <code>--session &lt;名&gt;</code> で起動(「2. 共有セッションモデル」参照)。</td>
+    </tr>
+    <tr>
+      <td>exe を作り直したい / ビルドを再現したい</td>
+      <td>環境メモとビルド再現手順(PATH・<code>LIBCLANG_PATH</code>・<code>BINDGEN_EXTRA_CLANG_ARGS</code>・必須の回避策2点)は <code>ROADMAP.md</code> が正です。そちらを参照してください。</td>
+    </tr>
+  </tbody>
+</table>
+<a class="toplink" href="#top">↑ 目次へ</a>
+
+<footer>
+  cmux windows-port — 利用マニュアル / 本書の内容は Windows 実機で検証済みの挙動に基づきます。<br>
+  関連: <code>README.md</code>(概要・構成)・<code>ROADMAP.md</code>(環境・ビルド)・<code>docs\keybindings.md</code>(全キー一覧)・<code>spec\spec.md</code>(凍結仕様)。
+</footer>
+
+</div>
+</body>
+</html>

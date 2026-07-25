@@ -1,0 +1,67 @@
+From 1b5369b736516db6afe48653bc6ad1f0557469e7 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@users.noreply.github.com>
+Date: Fri, 24 Jul 2026 23:15:12 +0900
+Subject: [PATCH] windows-port: don't emit terminal capability queries on
+ Windows (fixes DA1/pixel-size reply leaking into the pane prompt)
+
+On Windows read_stdin_for is a poll(2)-based unix-only no-op, so the kitty-graphics DA1 probe and the CSI 14 t pixel-size query were emitted but their replies were never drained, leaking into the active pane's prompt at startup. Guard the query writes behind cfg(unix); the empty read then yields the same 'unsupported / default cell' result without the leak.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ cmux-tui/crates/cmux-tui/src/ui/graphics.rs | 28 ++++++++++++++++-----
+ 1 file changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/graphics.rs b/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
+index 5b5c55cc18..3f6be0d0bb 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
+@@ -1,4 +1,5 @@
+ use std::collections::{HashMap, HashSet};
++#[cfg(unix)]
+ use std::io::Write;
+ use std::time::Duration;
+ #[cfg(unix)]
+@@ -97,9 +98,18 @@ pub fn delete_image(surface: SurfaceId) -> Vec<u8> {
+ }
+ 
+ pub fn probe_kitty_graphics() -> bool {
+-    let mut stdout = std::io::stdout();
+-    let _ = write!(stdout, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+-    let _ = stdout.flush();
++    // windows-port: on Windows `read_stdin_for` is a poll(2)-based unix-only
++    // stub that can't drain the reply, so emitting the DA1 query here would
++    // only leak the terminal's `CSI ? ... c` response into the active pane's
++    // prompt. Skip the query on non-unix; the empty read below then reports
++    // "unsupported", which matches the intended Windows behavior (no in-TUI
++    // kitty graphics).
++    #[cfg(unix)]
++    {
++        let mut stdout = std::io::stdout();
++        let _ = write!(stdout, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
++        let _ = stdout.flush();
++    }
+     let bytes = read_stdin_for(Duration::from_millis(180));
+     let ok = find_bytes(&bytes, b"_Gi=31;OK");
+     let da = find_da1(&bytes);
+@@ -142,9 +152,15 @@ fn query_cell_pixels() -> Option<(u16, u16)> {
+     if cols == 0 || rows == 0 {
+         return None;
+     }
+-    let mut stdout = std::io::stdout();
+-    let _ = write!(stdout, "\x1b[14t");
+-    let _ = stdout.flush();
++    // windows-port: skip the `CSI 14 t` pixel-size query on non-unix for the
++    // same reason as probe_kitty_graphics (reply can't be drained → would leak
++    // into the pane). The empty read below then yields None → default cell.
++    #[cfg(unix)]
++    {
++        let mut stdout = std::io::stdout();
++        let _ = write!(stdout, "\x1b[14t");
++        let _ = stdout.flush();
++    }
+     let bytes = read_stdin_for(Duration::from_millis(120));
+     let response = String::from_utf8_lossy(&bytes);
+     let start = response.find("\x1b[4;")?;
+-- 
+2.53.0.windows.2
+

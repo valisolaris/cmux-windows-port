@@ -1,0 +1,18 @@
+# 非公開: ローカル作業ツリー
+thinking-dashboard/
+# 本家 clone 全体(本体ソース。非同梱)
+cmux/
+# 参照用 zip 展開物(非同梱)
+cmux-main/
+# ローカル進捗ログ(非公開)
+ROADMAP.md
+
+# 非公開: ビルド生成物 / デバッグ用
+# release ビルド済み GPL バイナリ(非同梱)
+bin/cmux-tui.exe
+# CDP 調査用スクリプト(非公開)
+bin/cmux-debug.ps1
+
+# 機密(安全策)
+.env
+.env.*

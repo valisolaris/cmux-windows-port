@@ -1,0 +1,47 @@
+From 3090c037d446cbed1a3ee6b636a0d9af06141158 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@users.noreply.github.com>
+Date: Sat, 25 Jul 2026 06:54:20 +0900
+Subject: [PATCH] windows-port: build a valid file:/// URL from Windows paths
+ (fixes blank browser preview + CDP page-target wedge)
+
+file_url percent-encoded the drive colon and backslashes into the URL authority (file://C%3A%5C...), so Chrome treated the drive as a bogus host: the page never loaded and the attached CDP page target wedged, timing out Page.enable. On Windows, prepend the authority slash and map \ to / with the drive colon kept, yielding file:///C:/path. Unix output is unchanged (all new arms are cfg(windows)).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs b/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs
+index 14a3d326e4..2dc79b472c 100644
+--- a/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs
++++ b/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs
+@@ -333,11 +333,26 @@ pub fn shell_single_quote(value: &str) -> String {
+ pub fn file_url(path: &Path) -> String {
+     let text = path.to_string_lossy();
+     let mut url = String::from("file://");
++    // windows-port: a Windows path like `C:\a\b` must become `file:///C:/a/b`
++    // — forward slashes, empty authority, drive colon kept. Without this the
++    // drive/backslashes get percent-encoded into the URL's *authority*
++    // (`file://C%3A%5C...`), which Chrome treats as a bogus host: the page
++    // never loads and the CDP page target wedges (Page.enable hangs).
++    #[cfg(windows)]
++    if text.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic())
++        && text.as_bytes().get(1) == Some(&b':')
++    {
++        url.push('/');
++    }
+     for byte in text.bytes() {
+         match byte {
+             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                 url.push(char::from(byte));
+             }
++            #[cfg(windows)]
++            b'\\' => url.push('/'),
++            #[cfg(windows)]
++            b':' => url.push(':'),
+             _ => url.push_str(&format!("%{byte:02X}")),
+         }
+     }
+-- 
+2.53.0.windows.2
+
