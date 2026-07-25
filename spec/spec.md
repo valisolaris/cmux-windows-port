@@ -54,7 +54,7 @@ macOS 専用 cmux(manaflow-ai/cmux)の体験を Windows 11 で得る。要望は
 
 - **D1(Round 1)実行形態 = ネイティブのみで go**。x86_64-pc-windows-gnu、回避策2点前提(ROADMAP.md の再現手順が正)。WSL2 は今回のスコープから完全に外す(必要が生じたら別ランで再検討)。
 - **D2(Round 1)要望② = sidebar_files + CLI エディタ**。既存のファイルサイドバーでフォルダ閲覧し、Enter で CLI エディタを新規ターミナルタブとして起動。TUI 内で完結。エディタは micro(D5)、設定はランチャ側(D7)。
-- **D3(Round 1)要望③ = headful Chrome 実ウィンドウ**。browser pane の既定動作(既存 Chrome を CDP で headful 起動)をそのまま使う。in-TUI 画像表示(kitty graphics の Windows 移植)は**やらない**。TUI ペイン内はエラーメッセージ表示のままで許容。
+- **D3(Round 1)要望③ = headful Chrome 実ウィンドウ**。browser pane の既定動作(既存 Chrome を CDP で headful 起動)をそのまま使う。in-TUI 画像表示(kitty graphics の Windows 移植)は**やらない**。TUI ペイン内はエラーメッセージ表示のままで許容。**2026-07-25追記(Phase 4)**: kitty graphics に限っては上記の通り却下のまま。ただし Windows Terminal stable(1.24系)が Sixel には対応済みと判明したため、`browser.sixel`設定(既定 false、opt-in)で Sixel エンコードによる in-TUI プレビューを追加実装した(`cmux-tui/src/ui/graphics.rs`)。実機での表示確認は未実施。
 - **D4(Round 1)ターミナルホスト = Windows Terminal**。導入済み・追加インストール不要。D3 により端末の graphics 対応は不要。WezTerm は導入しない。
 - **D5(Round 2)エディタ = micro**。winget で導入(管理者権限不要)し、`EDITOR` 環境変数に設定。設定はシステム全体でなくランチャスクリプト側で行う(D7)。
 - **D6(Round 2)フォーク保守 = 一点改造・コミット固定**。`my-cmux\cmux` に main(7652d3b)からローカルブランチ `windows-port` を切り、build.rs パッチをコミットして固定。upstream 追従(fetch/rebase)はしない(必要が生じたら別ランで判断)。
