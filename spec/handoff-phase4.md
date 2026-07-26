@@ -7,16 +7,17 @@
 
 **2026-07-26 追記: ①も実機確認pass(実機で見つかったスクロール不具合を修正)。** §2cに詳細。**②(Enterでファイルを新規ペインで開く)のみ実機未確認のまま次回に持ち越し**(oでの新規ペイン確認は済んだが、Enterでのファイルオープンは未検証)。マウスホイールでのサイドバー(ファイルビュー)スクロール未対応が今回わかったが、既存の別件として今回は対応していない(`app.rs`の`handle_scroll`が`SidebarView::Workspaces`のときしか処理しないため。キーボード・クリックでは操作可能)。2026-07-26、`cmux`リポジトリ(windows-portブランチ)にPhase 4一式(今回の修正含む)をコミット。詳細はROADMAP.mdのPhase 4チェックリストを参照。
 
+**2026-07-26 追記(4回目・完了): Phase 4全項目 実機確認pass。** ②(Enter)・ダブルクリック・①(三角クリック展開)すべてユーザー実機確認pass。詳細は§2f。**本ラウンドはこれで完了**、windows-portブランチへコミット。
+
 ## 次回セッションでまずやること
 
-残っているのは②(サイドバーから`Enter`で開いたファイルが、既存ペインを上書きせず右に新規ペインで開くか)の実機確認だけ。手順:
+**本ラウンド(Phase 4 UX改善)は完了。** 次にユーザーから新しい要望が来たら、それに応じて新規の引き継ぎ書(または本ファイルへの追記)を作成すること。特に持ち越しの作業はない。
 
-1. `& "C:\Users\user\Documents\claude-projects\my-cmux\cmux\cmux-tui\target\x86_64-pc-windows-gnu\debug\cmux-tui.exe" --session verify-phase4`(隔離セッション名を必ず指定)
-2. サイドバーにフォーカス(`Ctrl+B`→`Shift+S`、IME英数モード)、任意のファイル(`.html`/`.md`以外でもよい)を選び`o`ではなく`Enter`で開く
-3. 既存ペインの内容が消えず、右に新しいペインが作られて`$EDITOR`(micro)がそこで起動するか確認
-4. pass/failを`ROADMAP.md`②の行と本ファイル§2bに追記
+なお、②(Enter)が2026-07-26の1〜2回目の実機確認でfailし3回目でpassした件は、**根本原因を特定していない**(ユーザー判断により深追いせず)。将来また同様の「無反応」報告があれば、§2eに記録した調査(エラー通知経路、`split_with_command`と`split_with_browser`の非対称性)を再利用して調査を再開できる。
 
-マウスホイールでのサイドバー(ファイルビュー)スクロール未対応(§2c末尾)は今回スコープ外のまま残っている。対応するかはユーザー判断待ち。
+なお、フルテストスイート(`cargo test -p cmux-tui --target x86_64-pc-windows-gnu`)は本ラウンドと無関係な環境起因のフレーキーが約25〜29件ある(`test_mux`ヘルパーがWindows上で`/bin/sh`スポーンを前提にしており未対応、config系テストは実行順で結果が変わる)。変更前後でスタッシュ比較し、この揺れが今回の修正と無関係であることは確認済み(§2c末尾参照)。
+
+**並行作業の注意**: 同じ`cmux`リポジトリ(windows-portブランチ、未コミット)で、別セッションが`ui/graphics.rs`(Windows Terminal向け`CSI 16 t`セルピクセルサイズ問い合わせ)を並行して編集中(ユーザー承知の上、意図した並行作業)。`git status`で自分が触っていないファイルの変更が見えても、それは別セッションの作業であり元に戻さないこと。
 
 ## 0. これは何か
 
@@ -55,7 +56,51 @@
 - 既存テスト(`sidebar_files`内のユニットテスト、`navigation.rs`のテスト)は前提変更に伴い大半書き直しが必要になる見込み。
 - 完了条件: サイドバーで複数のフォルダを同時に展開状態にして中身を見られる。既存の単一フォルダ表示時の挙動(フィルタ`/`、隠しファイルトグル`.`、reroot`~`等)が壊れていないこと。
 - **2026-07-26 実機確認で発見・修正した不具合**: 展開でリストが画面丈を超えたとき、すでに画面内に見えている行をマウスでクリックしても、その行が常に一番下の行へ飛ばされてしまう不具合があった。原因は`ui/sidebar.rs`の`file_scroll_offset`が現在のスクロール位置を保持せず、毎フレーム`selected`(絶対行番号)だけから「選択行を画面の最終行にする」オフセットを再計算していたこと。`sidebar_files/mod.rs`の`FileBrowser`に`scroll_offset`フィールドと`update_scroll(visible_height)`(選択行がすでに画面内ならオフセット不変、画面外に出たときだけ最小限スクロール)を追加して解消。`file_scroll_offset`は削除し呼び出し側を`app.sidebar_files.update_scroll(body_height)`に置き換え。回帰テスト`sidebar_files::tests::update_scroll_keeps_offset_when_selection_is_already_visible`を追加、sidebar_files全14件pass、ユーザー実機確認pass。
-- **既知の未対応(今回は対象外)**: サイドバーのファイルビューはマウスホイールでのスクロールに未対応(`app.rs`の`handle_scroll`が`SidebarView::Workspaces`のときしか処理しない)。キーボード(`↑`/`↓`/`Ctrl+j`/`Ctrl+k`)とマウスクリックでは操作可能。対応するかは次回ユーザー判断待ち。
+- **マウスホイールスクロール未対応、2026-07-26追記で実装完了(ビルド・ユニットテストpass、実機確認は次回②とあわせて実施)**: 原因は`app.rs::handle_scroll`が`SidebarView::Workspaces`のときしか処理しておらず、Files/Sessionsビューではホイールイベントが素通りしていたこと。3ビューは`workspace_sidebar_area`(同じ矩形、`sidebar_layout_for`で計算)を共有しているため、ビュー判定の条件漏れだった。対応: `sidebar_files/mod.rs`の`move_selection`(選択行を相対移動する既存の内部関数)を`pub`化し、`app.rs::handle_scroll`の分岐条件を`self.sidebar_view == SidebarView::Workspaces` → `matches!(self.sidebar_view, SidebarView::Workspaces | SidebarView::Files)`に拡張。Filesビューのときはホイール1刻みで`sidebar_files.move_selection(±3)`を呼び、既存の`update_scroll`(①で追加済み)が描画時に選択行を画面内へ追従させる。Sessionsビューは今回スコープ外のまま(ユーザーからの要望は「ファイルビュー」のみだったため)。
+  - 回帰テスト`app::tests::mouse_wheel_scrolls_file_sidebar_selection`を追加。ただし新規テストは既存の`test_mux`ヘルパー(`/bin/sh -c "sleep 30"`をハードコードしておりWindowsで`CreateProcessW`が失敗する)を使うと落ちるため、Windows上で既にpassしている`mouse_wheel_scrolls_machine_and_workspace_rail_viewports_independently`と同じパターン(`Mux::new(name, SurfaceOptions::default())` + `mux.new_workspace(..., None)`)に合わせて書いた。2回連続pass。
+  - フルテストスイート(`cargo test -p cmux-tui --target x86_64-pc-windows-gnu`)は本修正と無関係な環境起因のフレーキーが約25〜29件ある。内訳は主に (a) `test_mux`ヘルパー使用テスト(`/bin/sh`前提でWindows未対応)、(b) `config::tests::*`(実行順・並列実行で結果が変わる)、(c) `machine_action_worker`/`pointer_motion`/`deferred_input`系の並行処理タイミング依存テスト。**変更前後でstash比較して検証**: 変更前(スタッシュ)でフルスイート実行→25件失敗、変更を戻して再実行→29件、さらにもう一度→26件と、失敗件数・失敗テストの組み合わせ自体が実行のたびに変動し、変更の有無と相関しないことを確認した。したがって本修正によるリグレッションではないと判断(ただしこのフレーキー自体は別途対応が要るなら次回判断)。
+  - まだ**コミットしていない**(windows-portブランチの作業ツリーに変更あり)。②の実機確認とあわせてpass後にコミットする。
+
+### 2d. ユーザー実機確認(2026-07-26、マウスホイール実装後)で新たに判明した3件
+
+マウスホイールはpassしたが、そのあとの実機操作で3件報告あり。切り分け結果:
+
+1. **②(Enterで新規ペイン)が無反応**: 画面下部に"send to focused pane"(実際の文言は`sent to focused pane`)は出るが、ペインもブラウザも開かない。
+   - 原因(推定、未確定): `run_file_command`の`FileCommand::OpenEditor`(`app.rs:7172-7175`)は`$EDITOR`が未設定だと`vi`にフォールバックするが、Windowsに`vi`は無い。`App::split_with_command`(`app.rs:1847-1860`)は`enqueue_with_completion`で**非同期にキューイングして即座に`Ok(())`を返す**設計(`session.split_with_command`の実際の呼び出し・プロセス起動は後で完了する)ため、キューイング自体は成功して`sent to focused pane`が表示されるが、裏で`vi`のプロセス起動が失敗しても**UIには何も反映されない**(サイレント失敗)。
+   - `$EDITOR`をmicroのフルパスに設定するのは`bin\cmux.ps1`ランチャ(`bin/cmux.ps1:11-17`)の役目だが、**前回の実機確認手順ではdebug exeを直接起動しており`bin\cmux.ps1`を経由していなかった**ため`$EDITOR`が未設定だった可能性が高い。次回は`bin\cmux.ps1`経由で再検証し、それでも無反応ならコードのバグとして追加調査する(候補: `enqueue_with_completion`の完了ハンドラでエラーが握り潰されている、または`split_with_command`/`split_with_browser`のWindows上でのプロセス起動そのものに問題がある等)。
+2. **フォルダ左の三角(▸)をクリックしても展開されない**: コード確認の結果、**実装漏れと判明**。`ui/sidebar.rs`(旧694-697行)はディレクトリ行全体を単一の`Hit::SidebarFile{index}`として登録しており、クリック時は`select(index)`(選択)しか呼ばれず、展開/折りたたみはキーボード(→・←・Enter)からしか呼ばれていなかった。
+   - 対応: `Hit::SidebarFileToggle{index}`を新設し、マーカー(▸/▾、2桁分)の矩形だけをこのHitとして行のHitより先に登録(`App::hit_at`は`self.hits.iter().find(...)`で最初に一致したHitを返すため、先に登録した狭い矩形が優先される)。クリックハンドラで`select(index)` + 新設`FileBrowser::toggle_expand_selected()`(展開中なら折りたたみ、そうでなければ展開)を呼ぶ。`collapse_selected_or_go_to_parent`から共通処理`collapse_if_expanded()`を抜き出して再利用(重複回避)。
+   - 回帰テスト`app::tests::mouse_click_on_expand_marker_toggles_directory`追加、pass。
+3. **ファイルのダブルクリックで開かない**: コード確認の結果、**ダブルクリック検出自体が未実装**と判明(このコードベースに既存のダブルクリック機構は無かった)。
+   - 対応: `App`に`sidebar_file_last_click: Option<(Instant, usize)>`を追加し、`Hit::SidebarFile{index}`クリック時に同じ`index`への2回目のクリックが`SIDEBAR_FILE_DOUBLE_CLICK_WINDOW`(400ms)以内なら`sidebar_files.activate_selected()`(Enterと同じ処理)を呼んで`run_file_command`へ渡すよう実装。`activate_selected`を`pub`化。
+   - 回帰テスト`app::tests::double_click_on_file_row_activates_it_but_a_single_click_does_not`追加、pass(単発クリックでは発火せず、2回目で発火することを確認)。
+
+**テスト作成時の落とし穴(次回の参考)**: 上記2件のテストを最初に書いたとき、`sync_layout`が内部で呼ぶ`sync_sidebar_files_to_focus`(フォーカス中サーフェスのcwdへの自動追従、`app.rs:5181-5195`)が、`FileBrowser::new(temp)`をpin前に`sync_layout`すると**テスト用の一時ディレクトリではなく実際のプロセスのカレントディレクトリへ勝手にリルート**してしまい、想定外のディレクトリを展開してテストが落ちた(プロダクションコードのバグではなくテストの呼び出し順序の問題)。修正: `sync_layout`を`sidebar_files`差し替えの**前**に呼ぶ(以後`sync_layout`を呼ばなければ後からの差し替えは安全)。3件のテスト全てをこの順序に修正済み。
+
+ビルドexit 0、対象ユニットテスト18件(sidebar_files全14件+新規4件のapp::testsケース含む)pass。まだ**コミットしていない**。実機確認(①の手順、上記1〜3)は次回持ち越し。
+
+### 2e. ユーザー実機確認(2026-07-26、三角クリック・ダブルクリック実装後)で②が依然無反応
+
+①(三角クリックでの展開)とマウスホイールはユーザー実機確認pass。しかし**②(Enter)・ダブルクリックは`bin\cmux.ps1`経由で起動しても無反応のまま**(サイドバー下部に"sent to focused pane"は出るが、新規ペインは作られない)。
+
+- **EDITOR未設定・vi フォールバック説は否定された**: `bin\cmux.ps1`の`micro`解決ロジックをその場のPowerShellで直接実行して検証したところ、`C:\Users\user\AppData\Local\Microsoft\WinGet\Packages\zyedidia.micro_...\micro-2.0.15\micro.exe`という実在するフルパスに正しく解決された(`Test-Path`で存在確認済み)。ユーザーも今回`bin\cmux.ps1`経由で起動したことを確認済み。したがって`$EDITOR`がvi にフォールバックしている可能性は排除できる。
+- **エラー通知の仕組みを特定**: `run_file_command`の`FileCommand::OpenEditor`は`App::split_with_command`(`app.rs:1847`)→`enqueue_with_completion`(`app.rs:1332`)経由で**非同期にキューイングされ即座に`Ok(())`を返す**。実際のプロセス起動(`Surface::spawn`、`cmux-tui-core/src/surface.rs:451`、`pty.slave.spawn_command(cmd)`)はバックグラウンドスレッドで後から実行され、そこで失敗すると`pending.defer(SessionMutationOutcome::Failed(error.to_string()))`が呼ばれる(`app.rs:1361`)。これが後続のポーリングで`app.rs:5847`の`SessionMutationOutcome::Failed(error) => { ...; self.status_message = Some(format!("session operation failed: {error}")); }`に到達し、**画面右下の`[session-label]`表示位置が赤字太字のエラーメッセージに置き換わる**(`ui/mod.rs:103-121`)。
+- **未確認のまま持ち越し**: ユーザーに「Enterを再度試し、画面右下(通常`[verify-phase4]`と出ている場所)に赤字のエラーが出るか」を確認してもらうよう質問したが、回答を得る前にセッション切り替えとなった。**次回セッションはまずこの確認結果を聞くところから再開する**:
+  - 赤字のエラーメッセージが出ていれば、その文言(`os error ...`等)がそのまま原因。`Surface::spawn`内の`pty.slave.spawn_command(cmd)?`(`surface.rs:482`)がWindows特有の理由(パス・引数のクォート、ConPTY起動時の何らかの制約等)で失敗している可能性が高いので、その文言を手掛かりに`CommandBuilder`/`portable-pty`のWindows動作を調査する。
+  - 赤字が何も出ていなければ、`SessionMutationOutcome::Failed`のドレイン処理自体がこの完了経路(`SessionCompletionAction::SurfaceCreated`)まで届いていない、または`enqueue_with_completion`のクロージャに何らかの理由で到達していない(パニック・デッドロック等)可能性がある。`app.rs`の`pending_session_completions`の処理タイミング(いつ・どこでポーリングされるか)を再確認する。
+  - もう一つの切り分け材料: `o`(ブラウザで開く、`FileCommand::OpenBrowser`)は同じ非同期enqueue経路でも実機で成功しているため(2026-07-26ユーザー確認、新規ペインが右に開いた)、`split_with_command`(コマンド実行)と`split_with_browser`(ブラウザ)の**差分部分**(`spawn_surface_with_command`→`Surface::spawn`の実プロセス起動、対`spawn_browser_surface`のCDP/ブラウザブートストラップ)にバグが絞り込める。
+- **Windows Terminal「cmux」プロファイルでの誤起動が発覚**: ユーザーがWindows Terminalの新規タブメニューから起動したところ、`--session`指定なしで既定セッション`main`(ユーザーの普段使いの共有セッション)に接続し、実際に動いていたClaude Codeのペインが見えてしまう挙動が発生した。検証は必ずPowerShellから`--session verify-phase4`を明示して起動すること(本ファイル冒頭「次回セッションでまずやること」参照)。
+
+### 2f. ユーザー実機確認(2026-07-26、4回目)で②・ダブルクリック・①すべてpass、Phase 4完了
+
+前回(§2e)まで「②(Enter)・ダブルクリックが無反応」だったが、同日4回目の実機確認で状況が変わった。
+
+- **②(Enter)が実際にはpassしていた**: `Enter`を押すと右に新規ペインが作られ、選択したファイル(`index.html`)がそこにソースコードとして表示された(スクリーンショットで確認)。その状態でIMEを英数モードにして`o`を押すと、さらに別の新規ペインが開き、同じHTMLがヘッドフルChromeでレンダリングされた(思考ダッシュボードの見た目で表示)。
+- **これはバグではなく`spec/spec.md`の元仕様通りの役割分担と判明**: `spec.md`69-70行に「要望②(コード閲覧): Enter で `$EDITOR` = micro を新規PTYタブ起動。ファイル内容のin-TUI表示機能は追加実装しない」「要望③(HTMLプレビュー): `o` キーでHTMLをbrowserタブとして開く」と明記されている。つまり`Enter`は常にエディタでソースを開く設計であり、HTMLファイルであってもブラウザレンダリングにはならない。ユーザーは「Enterを押してもHTML画面(レンダリング結果)が出ない」ことを不具合だと考えていたが、確認の結果これは仕様通りの動作であり、**追加実装は不要**と判断(ユーザー了承済み)。
+- **ダブルクリック(§2dで実装)も実機確認pass**: ファイル行のダブルクリックでEnterと同じ動作(新規ペインでエディタが開く)が発火することを確認。
+- **①(三角クリックでの展開/折りたたみ、§2cで実装)も実機確認pass**: フォルダ左の▸クリックで展開/折りたたみが動作することを確認。
+- **未解決のまま残す点(根本原因不明)**: 2026-07-26の1〜2回目の実機確認では②(Enter)・ダブルクリックとも無反応(fail)だったが、3〜4回目では同じ`bin\cmux.ps1`経由の起動でpassした。原因の切り分け(ビルドの差、タイミング依存、操作手順の違いなど)は行っていない。ユーザーの判断により**深追いしない**。将来再発した場合は、§2eに記録したエラー通知経路の調査(`app.rs:1847`の`split_with_command`→`app.rs:1332`の`enqueue_with_completion`→失敗時`app.rs:5847`の`SessionMutationOutcome::Failed`で赤字表示、または`app.rs:7220-7223`の同期`Err`経路でサイドバー下部にメッセージ表示)を再利用する。
+- **結論: Phase 4(UX改善ラウンド)の要望5点+追加検討4点、すべて実機確認pass。本ラウンド完了。**
 
 ## 3. 境界(`spec/handoff.md` §1と同じルールを踏襲)
 
