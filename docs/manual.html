@@ -104,6 +104,10 @@
 <pre><code>powershell -NoLogo -ExecutionPolicy Bypass -File &lt;project-root&gt;\bin\cmux.ps1</code></pre>
 <p>ランチャは <code>EDITOR=micro</code> を<strong>このプロセス内だけ</strong>に設定してから <code>cmux-tui.exe</code> を起動します(システム/ユーザー環境変数は変更しません)。micro が PATH に無くても winget のパッケージ配置から版非依存で自動解決します。</p>
 
+<h3>C. 作業ディレクトリを指定して起動する</h3>
+<pre><code>powershell -NoLogo -ExecutionPolicy Bypass -File &lt;project-root&gt;\bin\cmux.ps1 C:\path\to\your-project</code></pre>
+<p><code>--cwd &lt;path&gt;</code>、または上記のような位置引数で、新規ペインの開始ディレクトリを指定できます(既定はホームディレクトリ)。Windows Terminal のプロファイルの <code>commandline</code> の末尾にパスを追記すれば、特定のプロジェクトフォルダに固定した起動プロファイルも作れます。</p>
+
 <div class="callout ok">
   <p><span class="tag">✓ 自己完結</span></p>
   <p><code>bin\cmux-tui.exe</code> は release ビルド済みで、外部 DLL(mingw ランタイム等)に依存しません。PATH が System32 のみでも起動します。</p>
@@ -145,7 +149,8 @@
     <tr><td>タブを閉じる (close-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+x</kbd></td><td><kbd>Alt+x</kbd></td></tr>
   </tbody>
 </table>
-<p class="lead">タブが複数あるペインで <kbd>Alt+x</kbd> を押すとそのタブだけを閉じ、最後の1つを閉じるとペインごと畳み込まれます。また、2つのペインのタブはマウスドラッグで1つのタブグループへ統合できます(タブをつまんで別ペインへドロップ)。</p>
+<p class="lead">タブが複数あるペインで <kbd>Alt+x</kbd> を押すとそのタブだけを閉じ、最後の1つを閉じるとペインごと畳み込まれます。また、2つのペインのタブはマウスドラッグで1つのタブグループへ統合できます(タブをつまんで別ペインへドロップ)。ペイン間の境界線も同様にドラッグで幅を変更できます(カーソル形状は↔に変わりませんが、ドラッグ自体は機能します)。</p>
+<p class="lead">タブがペイン幅に入りきらないときは、タブバーが自動で2段表示に切り替わります(設定 <code>tabs.max_rows</code>、既定 <code>2</code>。「6. 設定」参照)。2段でも入りきらない分は既存の <kbd>‹</kbd>/<kbd>›</kbd> スクロールで対応します。また、sidebar_files から開いたファイルのタブには番号ではなくファイル名が表示されます(文字数上限は <code>tabs.max_width</code>、既定 <code>24</code>)。</p>
 
 <h3>ペイン</h3>
 <table>
@@ -187,7 +192,7 @@
     <tr><td>サイドバーへフォーカス (focus-sidebar)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd></td></tr>
   </tbody>
 </table>
-<p class="lead"><code>toggle-sidebar-view</code> はファイル→ワークスペース→セッションの3方向を循環します。「セッション」ビューは全ワークスペース・全ペインの全タブをフラットな一覧として表示し、選択して <kbd>Enter</kbd> すると画面外にあるタブでも直接フォーカスをジャンプできます。</p>
+<p class="lead"><code>toggle-sidebar-view</code> はファイル→ワークスペース→セッションの3方向を循環します。「セッション」ビューは全ワークスペース・全ペインの全タブをフラットな一覧として表示し、選択して <kbd>Enter</kbd> すると画面外にあるタブでも直接フォーカスをジャンプできます。サイドバーとペインの境界線(縦線)もマウスでドラッグして幅を変更できます。</p>
 
 <h3>スクリーン / ワークスペース</h3>
 <table>
@@ -310,6 +315,19 @@
   <li><code>"alt_shortcuts": false</code> にすると <kbd>Alt</kbd> 系モードレスを一括で無効化できます。</li>
   <li>アクション名(<code>new-tab</code> 等)は「3. キー表」の括弧内の英名と対応します。</li>
 </ul>
+<h3>タブ表示の調整(tabs セクション)</h3>
+<p><code>tabs</code> セクションでタブバーの段数・ラベル幅を上書きできます。</p>
+<pre><code>{
+  "tabs": {
+    "max_rows": 2,
+    "max_width": 24
+  }
+}</code></pre>
+<ul>
+  <li><code>"max_rows"</code>: タブバーの最大段数(既定 <code>2</code>)。有効値は <code>1</code>/<code>2</code>(範囲外は自動でclamp)。<code>1</code> にすると従来の1段+スクロール表示に戻ります。</li>
+  <li><code>"max_width"</code>: タブ1つのラベルの最大文字数、超過分は <code>…</code> で切り詰め(既定 <code>24</code>。4〜200に自動clamp)。</li>
+</ul>
+
 <div class="callout">
   <p><span class="tag">補足</span></p>
   <p>設定は起動時に読み込まれます。変更したら cmux-tui を再起動してください。</p>

@@ -23,10 +23,11 @@ Rust 製 TUI マルチプレクサ **`cmux-tui`** を **Windows 11 でネイテ�
 
 ## このリポジトリの中身
 
-本体は同梱せず、upstream の特定コミットに当てる **5つのパッチ**で Windows 対応を行います
+本体は同梱せず、upstream の特定コミットに当てる **9つのパッチ**で Windows 対応を行います
 (いずれも Unix 側の挙動は変えません)。`0001`〜`0003` は Phase 2/3(要望①②③の基本実装)、
-`0004`〜`0005` は Phase 4(実機での利用を通じて追加した UX 改善ラウンド)です。詳細な変更点は
-[更新履歴](#更新履歴)を参照してください。
+`0004`〜`0005` は Phase 4(実機での利用を通じて追加した UX 改善ラウンド)、`0006` は Phase 5
+(起動時ディレクトリ指定)、`0007`〜`0009` は Phase 6(タブバーのUX改善+バグ修正)です。詳細な
+変更点は[更新履歴](#更新履歴)を参照してください。
 
 | パッチ | 対象ファイル | 内容 |
 |---|---|---|
@@ -35,6 +36,10 @@ Rust 製 TUI マルチプレクサ **`cmux-tui`** を **Windows 11 でネイテ�
 | `0003` | `sidebar_files/mod.rs` | Windows パスから正しい `file:///C:/…` を組み立てる(ブラウザプレビューの空白表示と CDP タイムアウトを解消) |
 | `0004` | `mux.rs`/`session/mod.rs`/`app.rs`/`sidebar_files/*`/`ui/graphics.rs`ほか | Phase 4 UX改善ラウンド: サイドバーの複数フォルダ同時展開・ファイルを右の新規ペインで開く・Sixel HTML プレビュー(opt-in)・`/copy`貼り付け時の改行暴発修正ほか |
 | `0005` | `app.rs`/`sidebar_files/mod.rs`/`ui/sidebar.rs` | Phase 4 follow-ups: スクロール位置保持の修正・マウスホイール対応・フォルダ▸クリックでの展開/折りたたみ・ファイルのダブルクリックオープン |
+| `0006` | `main.rs` | 起動時に `--cwd <path>` または位置引数で新規ペインの開始ディレクトリを指定できるようにする(既定はホームディレクトリ) |
+| `0007` | `app.rs`/`config.rs`/`ui/pane.rs` | タブがペイン幅に入りきらないとき、タブバーを動的に2段化(設定 `tabs.max_rows`、既定2) |
+| `0008` | `mux.rs`/`session/mod.rs`/`app.rs`/`ui/pane.rs`/`config.rs` | sidebar_files から開いたエディタタブにファイル名を表示、ラベル文字数上限を設定 `tabs.max_width` 化(既定24) |
+| `0009` | `app.rs`/`config.rs` | `0007` のバグ修正: 2段化したタブバーで新規タブ/split作成時に content 高さが1行ズレる不整合を修正、`tabs.max_width` を4〜200にclamp(codexの第三者レビューで検出) |
 
 ## パッチを当ててビルドする
 
@@ -62,7 +67,11 @@ git am /path/to/cmux-windows-port/patches/0001-*.patch `
        /path/to/cmux-windows-port/patches/0002-*.patch `
        /path/to/cmux-windows-port/patches/0003-*.patch `
        /path/to/cmux-windows-port/patches/0004-*.patch `
-       /path/to/cmux-windows-port/patches/0005-*.patch
+       /path/to/cmux-windows-port/patches/0005-*.patch `
+       /path/to/cmux-windows-port/patches/0006-*.patch `
+       /path/to/cmux-windows-port/patches/0007-*.patch `
+       /path/to/cmux-windows-port/patches/0008-*.patch `
+       /path/to/cmux-windows-port/patches/0009-*.patch
 #   コミット履歴が不要なら:  git apply /path/to/.../patches/000*.patch
 
 # 3) ビルド用の環境変数(この呼び出し内でのみ設定)
@@ -109,6 +118,30 @@ powershell -NoLogo -ExecutionPolicy Bypass -File \path\to\cmux-windows-port\bin\
 }
 ```
 
+起動時に作業ディレクトリを固定したい場合は、`commandline` の末尾にパスを追記します(`0006` の
+`--cwd`/位置引数。`bin/cmux.ps1` は受け取った引数をそのまま `cmux-tui.exe` へ渡します):
+
+```json
+{
+  "name": "cmux (my-project)",
+  "commandline": "powershell.exe -NoLogo -ExecutionPolicy Bypass -File C:\\path\\to\\cmux-windows-port\\bin\\cmux.ps1 C:\\path\\to\\my-project"
+}
+```
+
+### パッチ追加後に `cmux-tui.exe` を更新する
+
+新しいパッチを取り込んでも **Windows Terminal の `settings.json` は変更不要**です。
+`bin/cmux.ps1` は常に「同じフォルダの `cmux-tui.exe`」を起動する固定エントリポイントなので、
+入れ替えるのは実行ファイルだけで済みます。
+
+1. ローカルの upstream clone で、追加分まで `git am`/`git apply` を当て直す(前掲コマンド参照)
+2. 前提ツール・release ビルドの手順(3・4)を再実行
+3. 生成された `target\x86_64-pc-windows-gnu\release\cmux-tui.exe` を、このリポジトリの
+   `bin\cmux-tui.exe` に上書きコピー
+
+Windows Terminal は次にタブを開いたときから新しい exe を使います(プロファイルの再作成や
+ターミナル自体の再起動は不要)。
+
 **操作方法・キーバインド・トラブルシュートは HTML マニュアルを参照** → [`docs/manual.html`](docs/manual.html)(ブラウザで開く)。
 既定キーバインドの一覧は [`docs/keybindings.md`](docs/keybindings.md)(コードから抽出した実物)。
 
@@ -127,17 +160,22 @@ cmux-windows-port/
 │  ├─ 0002-*.patch      ← graphics.rs(端末クエリ抑止)
 │  ├─ 0003-*.patch      ← sidebar_files(file:/// URL 生成)
 │  ├─ 0004-*.patch      ← Phase 4 UX改善ラウンド(複数フォルダ展開・右split新規ペイン・Sixelプレビュー等)
-│  └─ 0005-*.patch      ← Phase 4 follow-ups(スクロール修正・マウスホイール・▸クリック展開・ダブルクリック)
+│  ├─ 0005-*.patch      ← Phase 4 follow-ups(スクロール修正・マウスホイール・▸クリック展開・ダブルクリック)
+│  ├─ 0006-*.patch      ← 起動時 --cwd/位置引数で開始ディレクトリ指定
+│  ├─ 0007-*.patch      ← タブバー2段化(tabs.max_rows)
+│  ├─ 0008-*.patch      ← エディタタブのファイル名表示(tabs.max_width)
+│  └─ 0009-*.patch      ← 0007のバグ修正(2段タブバーの content 高さ不整合・max_widthのclamp)
 ├─ docs/
 │  ├─ manual.html       ← 利用マニュアル(単一 HTML・目次アンカー遷移)
 │  └─ keybindings.md    ← 既定キーバインド一覧(コードから抽出)
 ├─ samples/
 │  └─ preview-test.html ← HTML プレビュー動作確認用サンプル
 └─ spec/                ← 凍結済み仕様
-   ├─ spec.md           ← 凍結仕様(決定 D1〜D10)
-   ├─ decisions.md      ← 決定理由と捨てた選択肢
-   ├─ handoff.md        ← 実装引き継ぎ書
-   ├─ review.html       ← 仕様レビュー記録
+   ├─ spec.md / decisions.md / handoff.md      ← Phase 2/3 仕様一式(決定 D1〜D10)
+   ├─ review.html                              ← Phase 2/3 仕様レビュー記録
+   ├─ handoff-phase4.md                        ← Phase 4 実装引き継ぎ書
+   ├─ spec-tab-multirow.md 他3点               ← Phase 6(0007)仕様一式(spec/decisions/handoff/review)
+   ├─ spec-tab-filename.md 他3点               ← Phase 6(0008)仕様一式(spec/decisions/handoff/review)
    └─ upstream-issue-draft.md ← upstream 報告(#8904)の下書き
 ```
 
@@ -145,6 +183,29 @@ cmux-windows-port/
 > `bin/` に配置してください。
 
 ## 更新履歴
+
+### Phase 6 — タブバーUX改善+バグ修正(2026-07-26、パッチ `0007`・`0008`・`0009`)
+
+Phase 4 公開後、実機での利用を通じて次の改善を実装。仕様は spec-loop で凍結・実装・実機確認まで
+完了(手順・決定経緯は [`spec/spec-tab-multirow.md`](spec/spec-tab-multirow.md) /
+[`spec/spec-tab-filename.md`](spec/spec-tab-filename.md) と対応する decisions/handoff/review を参照)。
+
+- **タブバーの2段化(`0007`)** — ペイン幅にタブが入りきらないとき、タブバーを自動で2段表示に
+  切り替える(設定 `tabs.max_rows`、既定2)。`1` にすると従来の1段+スクロールに戻る。2段でも
+  入りきらない分は既存の `‹`/`›` スクロールを併用。タブの D&D も2段レイアウトに対応。
+- **エディタタブのファイル名表示(`0008`)** — sidebar_files から開いたファイルのタブに、番号ではなく
+  ファイル名を表示。ラベルの文字数上限は設定 `tabs.max_width`(既定24)で調整可能。
+- **`0007` のバグ修正(`0009`)** — 2段化したペインで新規タブ/split/ブラウザタブを作成すると
+  content の高さが1行ズレる不整合があり、codex の第三者レビューで検出・修正した。`tabs.max_width`
+  に極端な値を設定した際の内部計算オーバーフローも同時に 4〜200 の clamp で防止。自動テストは追加
+  済み(この修正自体の実機再確認は、更新版 `cmux-tui.exe` への入れ替え後に実施推奨)。
+
+### Phase 5 — 起動時ディレクトリ指定(2026-07-26、パッチ `0006`)
+
+`cmux-tui.exe` の起動時に `--cwd <path>` または位置引数で新規ペインの開始ディレクトリを指定できる
+ようにした(従来はホームディレクトリ固定)。Windows Terminal のプロファイルの `commandline` に
+パスを渡すことで、特定のプロジェクトフォルダに固定した起動プロファイルを作れる(具体例は
+[起動](#起動)節を参照)。
 
 ### Phase 4 — UX改善ラウンド(2026-07-26、パッチ `0004`・`0005`)
 
