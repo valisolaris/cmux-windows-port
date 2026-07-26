@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ペイン内タブバー2段表示 — 仕様視覚レビュー</title>
+<style>
+  :root {
+    --bg: #f7f5f1;
+    --panel: #ffffff;
+    --ink: #24211c;
+    --ink-soft: #5b564c;
+    --rule: #d8d2c6;
+    --accent: #3a6b5c;
+    --accent-soft: #e4efe9;
+    --term-bg: #1d201e;
+    --term-ink: #d8e6dc;
+    --term-dim: #7c8a80;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #181a17;
+      --panel: #212420;
+      --ink: #e9e6de;
+      --ink-soft: #a9a396;
+      --rule: #3a3d37;
+      --accent: #7fbfa6;
+      --accent-soft: #22332c;
+      --term-bg: #0f110f;
+      --term-ink: #cfe0d4;
+      --term-dim: #647065;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #181a17; --panel: #212420; --ink: #e9e6de; --ink-soft: #a9a396;
+    --rule: #3a3d37; --accent: #7fbfa6; --accent-soft: #22332c;
+    --term-bg: #0f110f; --term-ink: #cfe0d4; --term-dim: #647065;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f5f1; --panel: #ffffff; --ink: #24211c; --ink-soft: #5b564c;
+    --rule: #d8d2c6; --accent: #3a6b5c; --accent-soft: #e4efe9;
+    --term-bg: #1d201e; --term-ink: #d8e6dc; --term-dim: #7c8a80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Iowan Old Style", "Yu Mincho", "Georgia", serif;
+    background: var(--bg); color: var(--ink);
+    max-width: 880px; margin: 2.5rem auto; padding: 0 1.25rem 4rem;
+    line-height: 1.65;
+  }
+  h1 {
+    font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+    font-size: 1.5rem; font-weight: 600; letter-spacing: .01em;
+    border-bottom: 1px solid var(--rule); padding-bottom: .6rem;
+    text-wrap: balance;
+  }
+  h1 + p { color: var(--ink-soft); font-size: .95rem; max-width: 62ch; }
+  h2 {
+    font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+    font-size: 1rem; font-weight: 600; margin-top: 2.4rem;
+    display: flex; align-items: baseline; gap: .6rem;
+    color: var(--accent);
+  }
+  h2::before { content: ""; width: 1.4rem; height: 2px; background: var(--accent); flex: none; }
+  pre {
+    font-family: "Cascadia Mono", "MS Gothic", ui-monospace, monospace;
+    background: var(--term-bg); color: var(--term-ink);
+    padding: .9rem 1.1rem; border-radius: 6px; overflow-x: auto;
+    line-height: 1.3; font-size: .88rem; border: 1px solid var(--rule);
+  }
+  .caption { font-size: .9rem; color: var(--ink-soft); margin: .5rem 0 1.2rem; max-width: 68ch; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; font-family: "Segoe UI", "Yu Gothic UI", sans-serif; }
+  .table-wrap { overflow-x: auto; }
+  th, td { border: 1px solid var(--rule); padding: .45rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  td:last-child, th:last-child { white-space: nowrap; }
+  code { background: var(--accent-soft); padding: .05em .35em; border-radius: 3px; font-family: "Cascadia Mono", ui-monospace, monospace; font-size: .92em; }
+  .decl {
+    border: 1px solid var(--accent); background: var(--accent-soft);
+    padding: 1rem 1.2rem; border-radius: 6px; margin-top: 2.6rem;
+    font-family: "Segoe UI", "Yu Gothic UI", sans-serif; font-size: .92rem;
+  }
+  .decl strong { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>ペイン内タブバー2段表示 — 仕様視覚レビュー(2026-07-26)</h1>
+<p>spec.md / decisions.md(同ディレクトリ)で確定した配置・挙動のモックアップ。ラベルの中身・区切りの見た目は現行踏襲(タブ名/文字数は別軸)で、本図は<strong>配置のみ</strong>を示す。</p>
+
+<h2>1. 通常時(タブが収まる) — 従来どおり1段</h2>
+<pre>
+┌ t0 │ t1 │ t2 + ───────────────┐
+│ content: height = rect.h - 2  │
+│                               │
+└───────────────────────────────┘
+</pre>
+<p class="caption">タブが1段に収まる限り現状と完全に同一。<code>+</code> は最終タブの直後。</p>
+
+<h2>2. 2段表示(タブが溢れ、2段で全部見える)</h2>
+<pre>
+┌ t0 │ t1 │ t2 │ t3 │ t4 ──────┐
+│ t5 │ t6 + ────────────────────│
+│ content: height = rect.h - 3  │
+└───────────────────────────────┘
+</pre>
+<p class="caption">bar が動的に2行化し content が1行減る(PTY へ自動 resize 通知)。1段目は現行の <code>┌</code>〜<code>┐</code>、2段目は左右端 <code>│</code>・段間区切り線なし。<code>+</code> は最終可視タブ(t6)の直後。矢印なし(全タブ可視のため)。</p>
+
+<h2>3. 2段でも入りきらない(オーバーフロー) — 矢印スクロール併用</h2>
+<pre>
+┌‹ t3 │ t4 │ t5 │ t6 │ t7 ─────┐
+│ t8 │ t9 + ──────────────────›│
+│ content: height = rect.h - 3  │
+└───────────────────────────────┘
+</pre>
+<p class="caption"><code>tab_scroll = 3</code>(t0〜t2 は先頭側に非表示、t10 以降は末尾側に非表示)。<code>‹</code> は1段目左端(tab_scroll &gt; 0 のとき)、<code>›</code> は2段目右端(末尾側に非可視タブがあるとき)。段数は2で頭打ち(content の犠牲は最大1行)。</p>
+
+<h2>4. タブのドラッグ&ドロップ — 行優先の中点判定</h2>
+<pre>
+┌ t0 │ t1 │ t2 │ t3 │ t4 ──────┐
+│ t5 ▼ t6 + ────────────────────│
+│ content: height = rect.h - 3  │
+└───────────────────────────────┘
+</pre>
+<p class="caption">ポインタの Y でまず行を確定し、行内は X の中点判定(<code>▼</code> = この例では t5 と t6 の間に挿入)。行の右端(<code>─</code> 埋め)より右で離すと「その行の末尾=次行の先頭」。ソートキーは <code>(y, x, index)</code>。</p>
+
+<h2>5. 小ペイン(rect.height &lt; 5) — 従来動作へフォールバック</h2>
+<pre>
+┌‹ t4 │ t5 ›─┐
+│ content    │
+│            │
+└────────────┘
+</pre>
+<p class="caption">content 2行以上を確保できない高さでは2段化せず、従来の1段+矢印スクロール。</p>
+
+<h2>6. リサイズハンドル(変更なし)</h2>
+<p class="caption" style="margin-top:.4rem">ペイン上端リサイズのハンドルは<strong>1段目のみ</strong>(現行どおり。タブ本体セルはタブが優先)。2段目の <code>─</code> 埋めは不感帯で、何にも反応しない。</p>
+
+<h2>設定項目</h2>
+<div class="table-wrap"><table>
+<tr><th>項目</th><th>型</th><th>既定値</th><th>意味</th></tr>
+<tr><td><code>tabs.max_rows</code>(新設)</td><td>整数</td><td><code>2</code>(新挙動が既定ON)</td><td>タブバーの最大段数。<code>1</code> = 従来の1段+スクロールに完全復帰。有効値は 1/2 で、3以上は 2 扱い・0以下は 1 扱い。</td></tr>
+</table></div>
+
+<h2>確定チェックリスト</h2>
+<div class="table-wrap"><table>
+<tr><th>#</th><th>論点</th><th>決定</th><th>状態</th></tr>
+<tr><td>(a)</td><td>段領域の確保方式</td><td>動的2段化(溢れ時のみ bar 2行・content -1行)</td><td>確定 R1</td></tr>
+<tr><td>(b)</td><td>小ペインの扱い</td><td>rect.height &gt;= 5 のときのみ2段化、未満は1段へフォールバック</td><td>確定 R1</td></tr>
+<tr><td>(c)</td><td>最大段数・超過時</td><td>2段上限+既存 ‹/› 矢印スクロール併用</td><td>確定 R1</td></tr>
+<tr><td>(f)</td><td>設定項目</td><td><code>tabs.max_rows</code> 既定2(派生: 有効値1/2、範囲外はクランプ)</td><td>確定 R1+R2</td></tr>
+<tr><td>(d)</td><td>D&amp;D 行またぎ</td><td>行優先の中点判定、ソートキー (y, x, index)</td><td>確定 R2</td></tr>
+<tr><td>(e)</td><td>2段目とリサイズハンドル</td><td>不感帯(push_resize_hits は1段目のみ・変更なし)</td><td>確定 R2</td></tr>
+<tr><td>—</td><td>+ / 矢印の配置</td><td>+ は最終可視タブ直後、‹ は1段目左端・› は2段目右端</td><td>確定 R2</td></tr>
+<tr><td>(g)</td><td>パッチ分割・テスト</td><td>1パッチ+既存 fixture 更新同梱(自己完結)</td><td>確定 R2</td></tr>
+<tr><td>—</td><td>段間の視覚デザイン</td><td>2段目は左右端 │・段間区切り線なし。bar 領域は draw_tab_bar 担当</td><td>確定(仮案承認)</td></tr>
+<tr><td>—</td><td>スクロール状態</td><td>既存 tab_scroll(先頭可視タブのインデックス)を流用</td><td>確定(仮案承認)</td></tr>
+</table></div>
+
+<div class="decl">
+<strong>宣言:</strong> 2026-07-26 時点で未解決の曖昧点なし。本ページの視覚レビューで指摘が出た場合のみ、該当項目を spec.md の未決事項へ差し戻す。承認されれば spec.md を「凍結」に更新し、handoff.md の生成に進む。
+</div>
+
+</body>
+</html>

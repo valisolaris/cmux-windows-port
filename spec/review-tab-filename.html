@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>エディタタブのファイル名表示 — 仕様視覚レビュー</title>
+<style>
+  :root {
+    --bg: #f7f5f1; --panel: #ffffff; --ink: #24211c; --ink-soft: #5b564c;
+    --rule: #d8d2c6; --accent: #3a6b5c; --accent-soft: #e4efe9;
+    --term-bg: #1d201e; --term-ink: #d8e6dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #181a17; --panel: #212420; --ink: #e9e6de; --ink-soft: #a9a396;
+      --rule: #3a3d37; --accent: #7fbfa6; --accent-soft: #22332c;
+      --term-bg: #0f110f; --term-ink: #cfe0d4;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #181a17; --panel: #212420; --ink: #e9e6de; --ink-soft: #a9a396;
+    --rule: #3a3d37; --accent: #7fbfa6; --accent-soft: #22332c;
+    --term-bg: #0f110f; --term-ink: #cfe0d4;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f5f1; --panel: #ffffff; --ink: #24211c; --ink-soft: #5b564c;
+    --rule: #d8d2c6; --accent: #3a6b5c; --accent-soft: #e4efe9;
+    --term-bg: #1d201e; --term-ink: #d8e6dc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Iowan Old Style", "Yu Mincho", "Georgia", serif;
+    background: var(--bg); color: var(--ink);
+    max-width: 880px; margin: 2.5rem auto; padding: 0 1.25rem 4rem; line-height: 1.65;
+  }
+  h1 {
+    font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+    font-size: 1.5rem; font-weight: 600; letter-spacing: .01em;
+    border-bottom: 1px solid var(--rule); padding-bottom: .6rem; text-wrap: balance;
+  }
+  h1 + p { color: var(--ink-soft); font-size: .95rem; max-width: 62ch; }
+  h2 {
+    font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+    font-size: 1rem; font-weight: 600; margin-top: 2.4rem;
+    display: flex; align-items: baseline; gap: .6rem; color: var(--accent);
+  }
+  h2::before { content: ""; width: 1.4rem; height: 2px; background: var(--accent); flex: none; }
+  pre {
+    font-family: "Cascadia Mono", "MS Gothic", ui-monospace, monospace;
+    background: var(--term-bg); color: var(--term-ink);
+    padding: .9rem 1.1rem; border-radius: 6px; overflow-x: auto;
+    line-height: 1.3; font-size: .88rem; border: 1px solid var(--rule);
+  }
+  .caption { font-size: .9rem; color: var(--ink-soft); margin: .5rem 0 1.2rem; max-width: 68ch; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; font-family: "Segoe UI", "Yu Gothic UI", sans-serif; }
+  .table-wrap { overflow-x: auto; }
+  th, td { border: 1px solid var(--rule); padding: .45rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  code { background: var(--accent-soft); padding: .05em .35em; border-radius: 3px; font-family: "Cascadia Mono", ui-monospace, monospace; font-size: .92em; }
+  .decl {
+    border: 1px solid var(--accent); background: var(--accent-soft);
+    padding: 1rem 1.2rem; border-radius: 6px; margin-top: 2.6rem;
+    font-family: "Segoe UI", "Yu Gothic UI", sans-serif; font-size: .92rem;
+  }
+  .decl strong { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>エディタタブのファイル名表示と文字数上限緩和 — 仕様視覚レビュー(2026-07-26)</h1>
+<p>spec.md / decisions.md(同ディレクトリ)で確定した見た目・挙動のモックアップ。タブバーの2段表示(別仕様 20260726-pane-tab-multirow、パッチ0007)とは別件で、本図はすべて1段表示の従来レイアウト上で示す。</p>
+
+<h2>1. ファイル名表示(通常時)</h2>
+<pre>
+┌ main.rs │ config.rs │ 0 + ──────────┐
+│ content                             │
+└─────────────────────────────────────┘
+</pre>
+<p class="caption">sidebar_files から Enter で開いたエディタタブは、開いた時点で <code>path.file_name()</code>(拡張子込み)が name にセットされ、最優先で表示される(常時ON・設定なし)。シェルタブ(0)は従来どおり番号のまま。</p>
+
+<h2>2. 同名ファイルを複数開いたとき(自動区別なし)</h2>
+<pre>
+┌ mod.rs │ mod.rs │ 0 + ─────────────┐
+│ content                            │
+└────────────────────────────────────┘
+</pre>
+<p class="caption">例: <code>app/mod.rs</code> と <code>ui/mod.rs</code> を開いた状態。仕様として自動区別は<strong>しない</strong>。区別したい場合は既存の RenameTab で手動リネームする(以後は手動名が優先され、自動名で上書きされない)。</p>
+
+<h2>3. 文字数上限の緩和(16 → 設定値、既定24)</h2>
+<pre>
+旧(16固定):   integration_tes…
+新(既定24):   integration_test_helper…
+新(短い名前): main.rs                （切り詰めなし・そのまま）
+</pre>
+<p class="caption">ハードコードの <code>truncate(t, 16)</code> を <code>tabs.max_width</code>(既定24)に置換。上限を超えるときのみ末尾 <code>…</code> で切り詰め。widths/fits(横スクロール・当たり判定)には自動反映され下流改修は不要。</p>
+
+<h2>4. 日本語ファイル名の例(文字数ベース・現状踏襲)</h2>
+<pre>
+┌ 業務要件定義書_最終版.md │ 0 + ────┐
+</pre>
+<p class="caption">13文字なので24文字上限には収まり全文表示されるが、全角のためセル幅は約24セルと広めになる。カウントは<strong>文字数ベース(現状踏襲)</strong>で、表示幅(East Asian Width)ベースへの変更は本件の対象外。全角による座標ズレの可能性は RenameTab で日本語名を付けた場合に今も存在する既存制約であり、実害が出たら別件として扱う。</p>
+
+<h2>設定項目(Tabs 構造体、config.rs:642-666)</h2>
+<div class="table-wrap"><table>
+<tr><th>項目</th><th>型</th><th>既定値</th><th>意味(doc コメントに明記する対象)</th></tr>
+<tr><td><code>tabs.max_width</code>(本件で新設)</td><td>整数</td><td><code>24</code></td><td><strong>1タブのラベルの最大文字数</strong>(旧ハードコード16の置換)。超過分は <code>…</code> で切り詰め。</td></tr>
+<tr><td><code>tabs.min_width</code>(既存)</td><td>整数</td><td><code>7</code></td><td><strong>ラベルの最小幅(パディング)</strong>。max_width とは独立(min/max の対)。意味・挙動は変更しない。</td></tr>
+<tr><td><code>tabs.max_rows</code>(0007 で新設予定)</td><td>整数</td><td><code>2</code></td><td><strong>タブバーの最大段数</strong>(別仕様 20260726-pane-tab-multirow)。本件とは対象が別(ラベル vs バー)であることを doc コメントで明示。</td></tr>
+</table></div>
+
+<h2>確定チェックリスト</h2>
+<div class="table-wrap"><table>
+<tr><th>#</th><th>論点</th><th>決定</th><th>状態</th></tr>
+<tr><td>(a)</td><td>実現方式</td><td>split_with_command チェーン3層に name パラメータ追加、生成直後に set_name(RunCommandOptions.name と同型)</td><td>確定 R1</td></tr>
+<tr><td>(b)</td><td>有効化の形</td><td>常時ON・設定なし(個別解除は RenameTab)</td><td>確定 R1</td></tr>
+<tr><td>(c)</td><td>名前の中身</td><td>ファイル名のみ・拡張子込み(path.file_name())。同名は自動区別しない</td><td>確定 R1</td></tr>
+<tr><td>(d)</td><td>文字数上限</td><td>設定値化 tabs.max_width、既定24。min_width とは独立</td><td>確定 R1</td></tr>
+<tr><td>(e)</td><td>パッチ分割・適用順</td><td>独立パッチ 0008、0007(2段表示)の後に積む。機能的依存なし</td><td>確定 R2</td></tr>
+<tr><td>—</td><td>設定命名の整合</td><td>max_width のまま。max_width/min_width/max_rows の3項目の対象を doc コメントで明記</td><td>確定 R2</td></tr>
+<tr><td>—</td><td>全角文字の扱い</td><td>文字数ベースを現状踏襲。表示幅対応は別件(既存制約)</td><td>確定 R2</td></tr>
+<tr><td>—</td><td>テスト方針</td><td>ユニット2点(name 最優先/切り詰めが設定値に従う)+実機確認</td><td>確定 R2</td></tr>
+</table></div>
+
+<div class="decl">
+<strong>宣言:</strong> 2026-07-26 時点で未解決の曖昧点なし。本ページの視覚レビューで指摘が出た場合のみ、該当項目を spec.md の未決事項へ差し戻す。承認されれば spec.md を「凍結」に更新し、handoff.md の生成に進む。
+</div>
+
+</body>
+</html>
