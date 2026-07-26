@@ -1,0 +1,156 @@
+From 8bde0e1db94698c6f4b4822bb193ab86da8bfe33 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sun, 26 Jul 2026 14:55:48 +0900
+Subject: [PATCH] windows-port: accept a launch-time --cwd/positional path so
+ new panes start there
+
+cmux-tui.exe always started the first pane's shell in the home directory,
+ignoring the folder it was launched from or pointed at. Add --cwd (and an
+equivalent bare positional argument) to Args, validated as an existing
+directory at parse time, and thread it into SurfaceOptions.cwd before
+constructing the Mux. Every new_workspace()/spawn_surface() call already
+falls back to that Mux-level default when no other cwd is known, so this
+becomes the default for the whole session (not just the first pane),
+matching how a launcher profile pinned to a project folder is expected to
+behave. Session cwd tracking via OSC 7 remains out of scope (see ROADMAP).
+---
+ cmux-tui/crates/cmux-tui/src/main.rs | 68 +++++++++++++++++++++++++++-
+ 1 file changed, 67 insertions(+), 1 deletion(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/main.rs b/cmux-tui/crates/cmux-tui/src/main.rs
+index 1a2bf7b4eb..b14b12eafd 100644
+--- a/cmux-tui/crates/cmux-tui/src/main.rs
++++ b/cmux-tui/crates/cmux-tui/src/main.rs
+@@ -242,7 +242,7 @@ const USAGE: &str = "\
+ cmux-tui - terminal multiplexer backed by libghostty-vt
+ 
+ USAGE:
+-  cmux-tui [OPTIONS]           Start a session (TUI + control socket)
++  cmux-tui [OPTIONS] [PATH]    Start a session (TUI + control socket)
+   cmux-tui attach [OPTIONS]    Attach to an existing session's socket
+   cmux-tui relay [OPTIONS]     Relay stdio to a session's socket
+   cmux-tui <verb> [OPTIONS]    Run one control-socket command
+@@ -251,6 +251,8 @@ USAGE:
+ OPTIONS:
+   --session <name>   Session name (default: main). Determines the socket path.
+   --socket <path>    Explicit control socket path.
++  --cwd <path>       Directory new panes start in (default: home directory).
++                      May also be given as a bare positional argument (PATH).
+   --machine-provider <path>
+                      Use a dynamic machine provider Unix socket.
+   --machine-provider-command <program> [arg ...] --
+@@ -330,6 +332,7 @@ struct Args {
+     ws_token: Option<String>,
+     ws_insecure_bind: bool,
+     term: Option<String>,
++    cwd: Option<PathBuf>,
+ }
+ 
+ impl Args {
+@@ -363,6 +366,7 @@ fn parse_args_result(args: impl IntoIterator<Item = String>) -> Result<Args, Str
+         ws_token: None,
+         ws_insecure_bind: false,
+         term: None,
++        cwd: None,
+     };
+     let mut args = args.into_iter().peekable();
+     if args.peek().map(|s| s.as_str()) == Some("attach") {
+@@ -444,6 +448,13 @@ fn parse_args_result(args: impl IntoIterator<Item = String>) -> Result<Args, Str
+             "--term" => {
+                 out.term = Some(args.next().ok_or_else(|| "--term needs a value".to_string())?);
+             }
++            "--cwd" => {
++                if out.cwd.is_some() {
++                    return Err("--cwd may be supplied only once".to_string());
++                }
++                let value = args.next().ok_or_else(|| "--cwd needs a value".to_string())?;
++                out.cwd = Some(validate_cwd_arg(value)?);
++            }
+             "-h" | "--help" => {
+                 print!("{USAGE}");
+                 std::process::exit(0);
+@@ -452,12 +463,29 @@ fn parse_args_result(args: impl IntoIterator<Item = String>) -> Result<Args, Str
+                 println!("cmux-tui {}", version_string());
+                 std::process::exit(0);
+             }
++            other if !other.starts_with('-') => {
++                if out.cwd.is_some() {
++                    return Err(format!("unexpected extra argument {other:?}"));
++                }
++                out.cwd = Some(validate_cwd_arg(other.to_string())?);
++            }
+             other => return Err(format!("unknown argument {other:?}")),
+         }
+     }
+     Ok(out)
+ }
+ 
++/// Validates a `--cwd`/positional path argument eagerly so a typo in a
++/// launcher profile fails with a clear message instead of a raw PTY spawn
++/// error once the TUI has already taken over the terminal.
++fn validate_cwd_arg(value: String) -> Result<PathBuf, String> {
++    let path = PathBuf::from(value);
++    if !path.is_dir() {
++        return Err(format!("--cwd path {path:?} is not a directory"));
++    }
++    Ok(path)
++}
++
+ fn version_string() -> String {
+     // Packaged builds stamp both source identities so artifact validation can
+     // reject a cmux binary built against a different Ghostty checkout before
+@@ -857,6 +885,9 @@ fn run_server(
+     if let Some(term) = args.term {
+         surface_options.term = term;
+     }
++    if let Some(cwd) = &args.cwd {
++        surface_options.cwd = Some(cwd.display().to_string());
++    }
+     surface_options.extra_env.push(("CMUX_TUI_SOCKET".into(), socket_path.display().to_string()));
+     surface_options.extra_env.push(("CMUX_MUX_SOCKET".into(), socket_path.display().to_string()));
+ 
+@@ -1338,6 +1369,41 @@ mod tests {
+         assert!(parse_args_result(["--cloud-port".into(), "0".into()]).is_err());
+     }
+ 
++    #[test]
++    fn cwd_flag_accepts_an_existing_directory() {
++        let dir = std::env::temp_dir();
++        let parsed = args(&["--cwd", &dir.to_string_lossy()]);
++        assert_eq!(parsed.cwd, Some(dir));
++    }
++
++    #[test]
++    fn cwd_positional_argument_is_also_accepted() {
++        let dir = std::env::temp_dir();
++        let parsed = args(&["--session", "custom", &dir.to_string_lossy()]);
++        assert_eq!(parsed.cwd, Some(dir));
++        assert_eq!(parsed.session, "custom");
++    }
++
++    #[test]
++    fn cwd_flag_and_positional_together_is_rejected() {
++        let dir = std::env::temp_dir();
++        let dir = dir.to_string_lossy();
++        assert!(parse_args_result(["--cwd".into(), dir.to_string(), dir.to_string()]).is_err());
++    }
++
++    #[test]
++    fn cwd_positional_rejects_a_second_bare_argument() {
++        let dir = std::env::temp_dir();
++        let dir = dir.to_string_lossy().into_owned();
++        assert!(parse_args_result([dir.clone(), dir]).is_err());
++    }
++
++    #[test]
++    fn cwd_rejects_a_path_that_is_not_a_directory() {
++        let bogus = std::env::temp_dir().join("cmux-tui-cwd-arg-test-does-not-exist");
++        assert!(parse_args_result(["--cwd".into(), bogus.to_string_lossy().into_owned()]).is_err());
++    }
++
+     #[test]
+     fn provider_resolution_keeps_defaults_off_and_applies_cli_over_config() {
+         let mut config = config::Config::default();
+-- 
+2.53.0.windows.2
+

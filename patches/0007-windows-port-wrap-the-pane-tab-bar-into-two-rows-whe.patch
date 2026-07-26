@@ -1,0 +1,722 @@
+From 2d7987449b7ad2ada0b0c67c36ba4271ace75cc5 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sun, 26 Jul 2026 18:35:58 +0900
+Subject: [PATCH] windows-port: wrap the pane tab bar into two rows when tabs
+ overflow
+
+Adds tabs.max_rows (default 2) so a pane's tab bar grows to a second
+row instead of only horizontal-scrolling when its tabs don't fit.
+pane_parts_for_rect now takes each tab's rendered label width and
+decides bar height (1 or 2) from the same reservation draw_tab_bar
+uses, so layout and rendering never disagree on where a row wraps.
+draw_box's side borders and tab_drop_target_at's drag-and-drop target
+resolution are generalized to respect however many rows the bar has;
+push_resize_hits is intentionally left untouched (row 2 stays a dead
+zone, matching the existing top-row-only resize handle). Falls back to
+the existing single-row + arrow-scroll behavior when max_rows=1, the
+pane is too short (height < 5), or everything still fits in one row.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs     | 175 +++++++++++++-
+ cmux-tui/crates/cmux-tui/src/config.rs  |  34 +++
+ cmux-tui/crates/cmux-tui/src/ui/pane.rs | 299 +++++++++++++++++-------
+ 3 files changed, 406 insertions(+), 102 deletions(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index 85db5cd089..790bcbb456 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -3244,19 +3244,39 @@ fn rail_drag_width(config: &Config, layout: SidebarLayout, kind: RailKind, x: u1
+ }
+ 
+ fn content_size_for_rect(rect: Rect, scrollbar: ScrollbarPosition) -> Option<(u16, u16)> {
+-    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, false);
++    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, false, &[], 1);
+     (content.width > 0 && content.height > 0).then_some((content.width, content.height))
+ }
+ 
+ fn browser_content_size_for_rect(rect: Rect, scrollbar: ScrollbarPosition) -> Option<(u16, u16)> {
+-    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, true);
++    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, true, &[], 1);
+     (content.width > 0 && content.height > 0).then_some((content.width, content.height))
+ }
+ 
++/// How many rows the tab bar needs: 1 normally, 2 when the tabs (plus the
++/// `+` button and a possible `›` arrow) don't fit a single row and both
++/// `max_rows` and the pane's height allow growing. `PLUS_W`/`ARROW_W` match
++/// the per-tab reservation `draw_tab_bar` (via the same
++/// [`crate::ui::pane::tab_bar_label_widths`] input) uses when deciding
++/// whether every tab fits row 1 unscrolled, so bar and content never
++/// disagree on where a row wraps.
++fn tab_bar_rows(rect: Rect, tab_widths: &[u16], max_rows: u16) -> u16 {
++    if max_rows < 2 || rect.height < 5 {
++        return 1;
++    }
++    let inner_w = u32::from(rect.width.saturating_sub(2));
++    const PLUS_W: u32 = 3; // " + "
++    const ARROW_W: u32 = 1; // possible trailing "›"
++    let total: u32 = tab_widths.iter().map(|&w| u32::from(w)).sum::<u32>() + PLUS_W + ARROW_W;
++    if total > inner_w { 2 } else { 1 }
++}
++
+ fn pane_parts_for_rect(
+     rect: Rect,
+     scrollbar: ScrollbarPosition,
+     browser_omnibar: bool,
++    tab_widths: &[u16],
++    max_rows: u16,
+ ) -> (Option<Rect>, Option<Rect>, Rect, Option<Rect>) {
+     let (bar, mut content, track) = if rect.width > 2 && rect.height > 2 {
+         let reserved_cols = match scrollbar {
+@@ -3268,15 +3288,21 @@ fn pane_parts_for_rect(
+             ScrollbarPosition::Column => right_border_x.saturating_sub(1),
+             ScrollbarPosition::Border => right_border_x,
+         };
++        let bar_rows = tab_bar_rows(rect, tab_widths, max_rows);
+         (
+-            Some(Rect { height: 1, ..rect }),
++            Some(Rect { height: bar_rows, ..rect }),
+             Rect {
+                 x: rect.x + 1,
+-                y: rect.y + 1,
++                y: rect.y + bar_rows,
+                 width: rect.width.saturating_sub(reserved_cols).max(1),
+-                height: rect.height - 2,
++                height: rect.height - 1 - bar_rows,
+             },
+-            Some(Rect { x: track_x, y: rect.y + 1, width: 1, height: rect.height - 2 }),
++            Some(Rect {
++                x: track_x,
++                y: rect.y + bar_rows,
++                width: 1,
++                height: rect.height - 1 - bar_rows,
++            }),
+         )
+     } else {
+         (None, rect, None)
+@@ -5288,7 +5314,14 @@ impl App {
+             let (bar, omnibar, content, track) = if stacked_headers.contains(&pane_id) {
+                 stacked_header_parts_for_rect(rect)
+             } else {
+-                pane_parts_for_rect(rect, self.config.scrollbar.position, has_browser_omnibar)
++                let tab_widths = crate::ui::pane::tab_bar_label_widths(&self.config.tabs, &pane.tabs);
++                pane_parts_for_rect(
++                    rect,
++                    self.config.scrollbar.position,
++                    has_browser_omnibar,
++                    &tab_widths,
++                    self.config.tabs.max_rows,
++                )
+             };
+             self.pane_areas.push(PaneArea {
+                 pane: pane_id,
+@@ -7756,7 +7789,7 @@ impl App {
+             area.omnibar.is_some()
+         } else {
+             let (_, omnibar, _, _) =
+-                pane_parts_for_rect(area.rect, self.config.scrollbar.position, true);
++                pane_parts_for_rect(area.rect, self.config.scrollbar.position, true, &[], 1);
+             omnibar.is_some()
+         };
+         if !has_omnibar {
+@@ -8301,8 +8334,18 @@ impl App {
+                 _ => None,
+             })
+             .collect::<Vec<_>>();
+-        tab_hits.sort_by_key(|(rect, index)| (rect.x, *index));
++        // Row-first: sort by row (y) before x, so a 2-row tab bar resolves
++        // the pointer's row before doing the X-midpoint judgment within
++        // it. Dropping past a row's last tab (or on a row below one with
++        // tabs) means "end of this row" == "start of the next row".
++        tab_hits.sort_by_key(|(rect, index)| (rect.y, rect.x, *index));
+         for (rect, index) in &tab_hits {
++            if rect.y != y {
++                if y < rect.y {
++                    return Some((area.pane, (*index).min(len)));
++                }
++                continue;
++            }
+             let mid = rect.x + rect.width / 2;
+             if x < mid {
+                 return Some((area.pane, (*index).min(len)));
+@@ -10539,7 +10582,7 @@ fn browser_key_mapping(
+ mod tests {
+     use super::{
+         App, AppEvent, BACKGROUND_REFRESH_RETRIES, ContextMenu, DeferredInput, Drag, FocusTarget,
+-        ForwardMuxOutcome, MachineActionWorker, MenuAction, MenuItem, MuxTitleIngress,
++        ForwardMuxOutcome, Hit, MachineActionWorker, MenuAction, MenuItem, MuxTitleIngress,
+         OrderedSession, PaneArea, PaneFocusHistory, PendingSessionMutation,
+         PendingSessionMutationState, PromptTarget, PtyFailureIngress, PtyMousePressResult,
+         RailKind, RenderAction, Selection, SessionCompletion, SessionCompletionAction,
+@@ -11257,7 +11300,7 @@ mod tests {
+     fn browser_omnibar_reduces_content_rect_for_graphics_and_input() {
+         let rect = Rect { x: 10, y: 4, width: 80, height: 24 };
+         let (_bar, omnibar, content, track) =
+-            pane_parts_for_rect(rect, ScrollbarPosition::Column, true);
++            pane_parts_for_rect(rect, ScrollbarPosition::Column, true, &[], 1);
+         assert_eq!(omnibar, Some(Rect { x: 11, y: 5, width: 77, height: 1 }));
+         assert_eq!(content, Rect { x: 11, y: 6, width: 77, height: 21 });
+         assert_eq!(track, Some(Rect { x: 88, y: 5, width: 1, height: 22 }));
+@@ -11267,11 +11310,119 @@ mod tests {
+     fn browser_omnibar_degrades_gracefully_with_one_content_row() {
+         let rect = Rect { x: 0, y: 0, width: 20, height: 3 };
+         let (_bar, omnibar, content, _track) =
+-            pane_parts_for_rect(rect, ScrollbarPosition::Border, true);
++            pane_parts_for_rect(rect, ScrollbarPosition::Border, true, &[], 1);
+         assert_eq!(omnibar, None);
+         assert_eq!(content, Rect { x: 1, y: 1, width: 18, height: 1 });
+     }
+ 
++    #[test]
++    fn tab_bar_grows_to_two_rows_when_tabs_overflow_one_row() {
++        let rect = Rect { x: 0, y: 0, width: 40, height: 10 };
++        // 5 tabs x 10 cells = 50, plus the " + " button (3) = 53 > inner_w (38).
++        let tab_widths = [10u16, 10, 10, 10, 10];
++        let (bar, _omnibar, content, track) =
++            pane_parts_for_rect(rect, ScrollbarPosition::Border, false, &tab_widths, 2);
++        assert_eq!(bar, Some(Rect { x: 0, y: 0, width: 40, height: 2 }));
++        assert_eq!(content, Rect { x: 1, y: 2, width: 38, height: 7 });
++        assert_eq!(track, Some(Rect { x: 39, y: 2, width: 1, height: 7 }));
++    }
++
++    #[test]
++    fn tab_bar_stays_one_row_when_pane_is_too_short_to_grow() {
++        let rect = Rect { x: 0, y: 0, width: 40, height: 4 };
++        let tab_widths = [10u16, 10, 10, 10, 10];
++        let (bar, _omnibar, content, _track) =
++            pane_parts_for_rect(rect, ScrollbarPosition::Border, false, &tab_widths, 2);
++        assert_eq!(bar, Some(Rect { x: 0, y: 0, width: 40, height: 1 }));
++        assert_eq!(content, Rect { x: 1, y: 1, width: 38, height: 2 });
++    }
++
++    #[test]
++    fn tab_bar_max_rows_one_never_grows_even_when_tabs_overflow() {
++        let rect = Rect { x: 0, y: 0, width: 40, height: 10 };
++        let tab_widths = [10u16, 10, 10, 10, 10];
++        let (bar, _omnibar, content, _track) =
++            pane_parts_for_rect(rect, ScrollbarPosition::Border, false, &tab_widths, 1);
++        assert_eq!(bar, Some(Rect { x: 0, y: 0, width: 40, height: 1 }));
++        assert_eq!(content, Rect { x: 1, y: 1, width: 38, height: 8 });
++    }
++
++    #[test]
++    fn tab_drop_target_at_resolves_row_first_in_a_two_row_bar() {
++        let mux = Mux::new("tab-drop-two-row-test", SurfaceOptions::default());
++        let mut app = test_app(Session::Local(mux));
++
++        let pane_id = 1u64;
++        let tabs: Vec<TabView> = (0..7u64)
++            .map(|i| TabView {
++                surface: i,
++                short_id: i.to_string(),
++                name: None,
++                title: String::new(),
++                kind: SurfaceKind::Pty,
++                browser_source: None,
++                browser_frames_stalled: false,
++                notification: None,
++            })
++            .collect();
++        app.tree = TreeView {
++            workspaces: vec![WorkspaceView {
++                id: 1,
++                key: "w".to_string(),
++                short_id: "w".to_string(),
++                name: "w".to_string(),
++                screens: vec![ScreenView {
++                    id: 1,
++                    short_id: "s".to_string(),
++                    name: None,
++                    layout: Node::Leaf(pane_id),
++                    active_pane: pane_id,
++                    zoomed_pane: None,
++                    panes: vec![PaneView {
++                        id: pane_id,
++                        short_id: "p".to_string(),
++                        name: None,
++                        tabs,
++                        active_tab: 0,
++                        focused_at: 0,
++                    }],
++                }],
++                active_screen: 0,
++            }],
++            workspace_revision: 0,
++            pane_revision: None,
++            active_workspace: 0,
++        };
++
++        // Mirrors review.html's figure 2/4: row 1 = t0..t4, row 2 = t5, t6.
++        app.pane_areas.push(PaneArea {
++            pane: pane_id,
++            surface: 0,
++            rect: Rect { x: 0, y: 0, width: 40, height: 10 },
++            bar: Some(Rect { x: 0, y: 0, width: 40, height: 2 }),
++            omnibar: None,
++            content: Rect { x: 1, y: 2, width: 38, height: 7 },
++            track: None,
++        });
++        for i in 0u16..5 {
++            app.hits.push((
++                Rect { x: 1 + i * 5, y: 0, width: 5, height: 1 },
++                Hit::Tab { pane: pane_id, index: i as usize },
++            ));
++        }
++        for i in 0u16..2 {
++            app.hits.push((
++                Rect { x: 1 + i * 5, y: 1, width: 5, height: 1 },
++                Hit::Tab { pane: pane_id, index: 5 + i as usize },
++            ));
++        }
++
++        // Right half of t5's cell (row 2, x in [1, 6)): drop between t5 and t6.
++        assert_eq!(app.tab_drop_target_at(4, 1), Some((pane_id, 6)));
++        // Past t4 (row 1's last tab, ends at x=26): row 1's end == row 2's start.
++        assert_eq!(app.tab_drop_target_at(30, 0), Some((pane_id, 5)));
++    }
++
+     #[test]
+     fn browser_tab_size_hint_uses_omnibar_reduced_content() {
+         let rect = Rect { x: 10, y: 4, width: 80, height: 24 };
+diff --git a/cmux-tui/crates/cmux-tui/src/config.rs b/cmux-tui/crates/cmux-tui/src/config.rs
+index 7c2e9200a0..419e452859 100644
+--- a/cmux-tui/crates/cmux-tui/src/config.rs
++++ b/cmux-tui/crates/cmux-tui/src/config.rs
+@@ -406,6 +406,7 @@ pub fn is_light_background(bg: Rgb) -> bool {
+ #[serde(deny_unknown_fields)]
+ struct RawTabs {
+     min_width: Option<u16>,
++    max_rows: Option<u16>,
+     solid_background: Option<bool>,
+     show_titles: Option<bool>,
+     agents: Option<Vec<String>>,
+@@ -644,6 +645,9 @@ impl Default for Theme {
+ pub struct Tabs {
+     /// Minimum label width in cells (padded with spaces).
+     pub min_width: u16,
++    /// Maximum number of tab bar rows when tabs overflow the pane width.
++    /// Valid values are 1 or 2; out-of-range values are clamped (<=0 -> 1, >=3 -> 2).
++    pub max_rows: u16,
+     /// Tabs render with a solid background instead of text on the border.
+     pub solid_background: bool,
+     /// Show the process title after the number for every tab. Off by
+@@ -658,6 +662,7 @@ impl Default for Tabs {
+     fn default() -> Self {
+         Tabs {
+             min_width: 7,
++            max_rows: 2,
+             solid_background: true,
+             show_titles: false,
+             agents: ["claude", "codex", "opencode", "pi"].map(String::from).to_vec(),
+@@ -1337,6 +1342,9 @@ pub fn load() -> Config {
+     if let Some(w) = raw.tabs.min_width {
+         config.tabs.min_width = w.clamp(3, 40);
+     }
++    if let Some(r) = raw.tabs.max_rows {
++        config.tabs.max_rows = r.clamp(1, 2);
++    }
+     if let Some(b) = raw.tabs.solid_background {
+         config.tabs.solid_background = b;
+     }
+@@ -2455,6 +2463,32 @@ mod tests {
+         assert_eq!(config.theme.border_inactive, Theme::default().border_inactive);
+     }
+ 
++    #[test]
++    fn tabs_max_rows_default_is_two_and_out_of_range_values_clamp() {
++        assert_eq!(Tabs::default().max_rows, 2);
++
++        let _guard = CONFIG_ENV_LOCK.lock().unwrap();
++        let dir = std::env::temp_dir()
++            .join(format!("mux-config-test-max-rows-{}", std::process::id()));
++        std::fs::create_dir_all(&dir).unwrap();
++        let path = dir.join("mux.json");
++
++        std::fs::write(&path, r#"{"tabs": {"max_rows": 0}}"#).unwrap();
++        // SAFETY: env mutation in tests is serialized by CONFIG_ENV_LOCK.
++        unsafe { std::env::set_var("CMUX_MUX_CONFIG", &path) };
++        assert_eq!(load().tabs.max_rows, 1);
++
++        std::fs::write(&path, r#"{"tabs": {"max_rows": 5}}"#).unwrap();
++        assert_eq!(load().tabs.max_rows, 2);
++
++        std::fs::write(&path, r#"{"tabs": {"max_rows": 1}}"#).unwrap();
++        assert_eq!(load().tabs.max_rows, 1);
++
++        // SAFETY: env mutation in tests is serialized by CONFIG_ENV_LOCK.
++        unsafe { std::env::remove_var("CMUX_MUX_CONFIG") };
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
+     #[test]
+     fn browser_mode_defaults_headful_parses_headless_and_rejects_invalid_values() {
+         let raw: RawConfig = serde_json::from_str(r##"{}"##).unwrap();
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/pane.rs b/cmux-tui/crates/cmux-tui/src/ui/pane.rs
+index 04a041fef2..c7c4cc298c 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/pane.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/pane.rs
+@@ -15,7 +15,8 @@ use ratatui::style::{Color, Modifier, Style};
+ 
+ use super::{thumb_geometry, truncate};
+ use crate::app::{App, Hit, PaneArea, PaneEdge, Selection};
+-use crate::config::{Theme, tab_label};
++use crate::config::{Tabs, Theme, tab_label};
++use crate::session::tree::TabView;
+ use crate::session::{ClientInfo, TabNotificationView};
+ 
+ /// Border style for a pane box: active gets the accent color, idle
+@@ -115,7 +116,8 @@ pub fn draw_all(app: &mut App, frame: &mut Frame) -> DrawCursors {
+ /// draw the left/right/bottom edges and the corners.
+ fn draw_box(app: &mut App, frame: &mut Frame, area: &PaneArea, focused: bool) {
+     let rect = area.rect;
+-    if area.bar.is_none() || rect.width < 2 || rect.height < 2 {
++    let Some(bar) = area.bar else { return };
++    if rect.width < 2 || rect.height < 2 {
+         return;
+     }
+     let screen = frame.area();
+@@ -135,10 +137,13 @@ fn draw_box(app: &mut App, frame: &mut Frame, area: &PaneArea, focused: bool) {
+     if x1 >= screen.width || y1 >= screen.height {
+         return;
+     }
++    // Left/right edges start below the whole bar (1 or 2 rows): draw_tab_bar
++    // owns every cell of the bar, not just the top border row.
++    let sides_start = y0 + bar.height.max(1);
+     for x in x0 + 1..x1 {
+         buf[(x, y1)].set_symbol("─").set_style(style);
+     }
+-    for y in y0 + 1..y1 {
++    for y in sides_start..y1 {
+         buf[(x0, y)].set_symbol("│").set_style(style);
+         buf[(x1, y)].set_symbol("│").set_style(style);
+     }
+@@ -157,6 +162,32 @@ fn draw_box(app: &mut App, frame: &mut Frame, area: &PaneArea, focused: bool) {
+     }
+ }
+ 
++/// Padded, truncated cell text for every tab's label (e.g. " 1 zsh ").
++/// Shared between rendering (`draw_tab_bar`) and layout (`pane_parts_for_rect`,
++/// via [`tab_bar_label_widths`]) so the two never disagree about where a
++/// row wraps.
++pub(crate) fn tab_bar_labels(tab_cfg: &Tabs, tabs: &[TabView]) -> Vec<String> {
++    let min_w = tab_cfg.min_width as usize;
++    tabs.iter()
++        .enumerate()
++        .map(|(i, t)| {
++            let mut raw = tab_label(tab_cfg, i, &t.title, t.name.as_deref());
++            if t.notification.is_some_and(|notification| notification.unread) {
++                raw.push_str(" •");
++            }
++            let label = format!(" {} ", truncate(&raw, 16));
++            let short = min_w.saturating_sub(label.chars().count());
++            format!("{}{}{}", " ".repeat(short / 2), label, " ".repeat(short - short / 2))
++        })
++        .collect()
++}
++
++/// Cell width of each [`tab_bar_labels`] entry, for layout code that only
++/// needs to know how much horizontal room the tab bar needs.
++pub(crate) fn tab_bar_label_widths(tab_cfg: &Tabs, tabs: &[TabView]) -> Vec<u16> {
++    tab_bar_labels(tab_cfg, tabs).iter().map(|l| l.chars().count() as u16).collect()
++}
++
+ /// The top border row: `┌` + tabs + `+` + `─...─` + `┐`, with `‹`/`›`
+ /// overflow arrows when the tabs don't fit. Always visible so a new tab
+ /// is always one click away.
+@@ -165,18 +196,6 @@ fn draw_tab_bar(app: &mut App, frame: &mut Frame, area: &PaneArea, focused: bool
+     let Some(screen_view) = app.tree.active_screen() else { return };
+     let Some(pane) = screen_view.pane(area.pane) else { return };
+     let tab_cfg = app.config.tabs.clone();
+-    let tabs: Vec<String> = pane
+-        .tabs
+-        .iter()
+-        .enumerate()
+-        .map(|(i, t)| {
+-            let mut label = tab_label(&tab_cfg, i, &t.title, t.name.as_deref());
+-            if t.notification.is_some_and(|notification| notification.unread) {
+-                label.push_str(" •");
+-            }
+-            label
+-        })
+-        .collect();
+     let active_tab = pane.active_tab;
+     let pane_id = area.pane;
+     let hover = app.hover;
+@@ -236,100 +255,200 @@ fn draw_tab_bar(app: &mut App, frame: &mut Frame, area: &PaneArea, focused: bool
+     for x in x0 + 1..x1 {
+         buf[(x, bar.y)].set_symbol("─").set_style(style);
+     }
++    // Second row (2-row tab bars only): plain side edges, no corners, no
++    // divider from row 1 above.
++    if bar.height >= 2 {
++        let row2_y = bar.y + 1;
++        buf[(x0, row2_y)].set_symbol("│").set_style(style);
++        buf[(x1, row2_y)].set_symbol("│").set_style(style);
++        for x in x0 + 1..x1 {
++            buf[(x, row2_y)].set_symbol("─").set_style(style);
++        }
++    }
+ 
+     // Layout the tab labels: " 1 zsh " ... " + ", scrolled so the range
+     // starting at tab_scroll fits; the active tab is always kept visible.
+-    let min_w = tab_cfg.min_width as usize;
+-    let labels: Vec<String> = tabs
+-        .iter()
+-        .map(|t| {
+-            let label = format!(" {} ", truncate(t, 16));
+-            // Pad to the configured minimum width, keeping the text centered-ish.
+-            let short = min_w.saturating_sub(label.chars().count());
+-            format!("{}{}{}", " ".repeat(short / 2), label, " ".repeat(short - short / 2))
+-        })
+-        .collect();
++    let labels = tab_bar_labels(&tab_cfg, &pane.tabs);
+     let widths: Vec<u16> = labels.iter().map(|l| l.chars().count() as u16).collect();
+     let inner_w = bar.width.saturating_sub(2); // between the corners
+     let plus_w: u16 = 3; // " + "
+     let arrow_w: u16 = 1;
+ 
+-    // Clamp the requested scroll, then bump it until the active tab fits.
+-    let max_scroll = tabs.len().saturating_sub(1);
+-    let mut scroll = app.tab_scroll.get(&pane_id).copied().unwrap_or(0).min(max_scroll);
+-    let fits = |scroll: usize| {
+-        let left_arrow = if scroll > 0 { arrow_w } else { 0 };
+-        let mut budget = inner_w.saturating_sub(left_arrow + plus_w + arrow_w);
+-        for w in &widths[scroll..=active_tab.max(scroll)] {
+-            if *w > budget {
+-                return false;
++    let max_scroll = pane.tabs.len().saturating_sub(1);
++    let mut hits = Vec::new();
++    let max_x = x1; // exclusive, shared by both rows
++
++    if bar.height >= 2 {
++        // Two-row layout: wrap tabs at tab boundaries across row 1 (bar.y)
++        // and row 2 (bar.y + 1). Each placement attempt reserves the same
++        // `plus_w + arrow_w` per tab as the single-row path below, so a
++        // pane that `tab_bar_rows` (app.rs) decided needs only 1 row will
++        // never reach this branch in the first place (bar.height would be 1).
++        let row_ys = [bar.y, bar.y + 1];
++        let wrap = |scroll: usize| -> (Vec<(usize, usize, u16)>, bool) {
++            let mut placed = Vec::new();
++            let mut row = 0usize;
++            let mut x = x0 + 1 + if scroll > 0 { arrow_w } else { 0 };
++            for (i, &w) in widths.iter().enumerate().skip(scroll) {
++                if x + w + plus_w + arrow_w > max_x {
++                    if row + 1 >= row_ys.len() {
++                        return (placed, false);
++                    }
++                    row += 1;
++                    x = x0 + 1;
++                    if x + w + plus_w + arrow_w > max_x {
++                        return (placed, false);
++                    }
++                }
++                placed.push((i, row, x));
++                x += w;
+             }
+-            budget -= *w;
++            (placed, true)
++        };
++
++        // Clamp the requested scroll, then bump it until the active tab fits.
++        let mut scroll = app.tab_scroll.get(&pane_id).copied().unwrap_or(0).min(max_scroll);
++        while scroll < active_tab {
++            let (placed, _) = wrap(scroll);
++            if placed.iter().any(|&(i, _, _)| i == active_tab) {
++                break;
++            }
++            scroll += 1;
++        }
++        app.tab_scroll.insert(pane_id, scroll);
++        let (placed, all_fit) = wrap(scroll);
++        let overflow = !all_fit;
++
++        if scroll > 0 {
++            let rect = Rect { x: x0 + 1, y: row_ys[0], width: arrow_w, height: 1 };
++            buf.set_stringn(rect.x, rect.y, "‹", 1, ctrl_style(rect));
++            hits.push((rect, Hit::TabScroll { pane: pane_id, delta: -1 }));
+         }
+-        true
+-    };
+-    while scroll < active_tab && !fits(scroll) {
+-        scroll += 1;
+-    }
+-    app.tab_scroll.insert(pane_id, scroll);
+ 
+-    let mut hits = Vec::new();
+-    let mut x = x0 + 1;
+-    let max_x = x1; // exclusive
+-    if scroll > 0 {
+-        let rect = Rect { x, y: bar.y, width: arrow_w, height: 1 };
+-        buf.set_stringn(x, bar.y, "‹", 1, ctrl_style(rect));
+-        hits.push((rect, Hit::TabScroll { pane: pane_id, delta: -1 }));
+-        x += arrow_w;
+-    }
+-    let mut overflow = false;
+-    for (i, label) in labels.iter().enumerate().skip(scroll) {
+-        let w = widths[i];
+-        // Reserve room for the + button and a possible right arrow.
+-        if x + w + plus_w + arrow_w > max_x {
+-            overflow = true;
+-            break;
++        let mut tail_row = 0usize;
++        let mut tail_x = x0 + 1 + if scroll > 0 { arrow_w } else { 0 };
++        for &(i, row, x) in &placed {
++            let y = row_ys[row];
++            let w = widths[i];
++            let is_active = i == active_tab;
++            let mut style = if is_active { active_style } else { base };
++            if let Some(notification) =
++                pane.tabs[i].notification.filter(|notification| notification.unread)
++            {
++                style = style.fg(notification_color(&theme, notification));
++            }
++            if tab_drag.is_some_and(|drag| pane.tabs[i].surface == drag.surface) {
++                style = style.add_modifier(Modifier::DIM);
++            }
++            buf.set_stringn(x, y, &labels[i], w as usize, style);
++            if tab_cfg.solid_background && is_active {
++                buf[(x, y)].set_symbol("▎").set_style(style.fg(theme.tab_rail));
++            }
++            if drop_index == Some(i) {
++                buf[(x, y)]
++                    .set_symbol("▌")
++                    .set_style(Style::default().fg(theme.tab_rail).add_modifier(Modifier::BOLD));
++            }
++            hits.push((Rect { x, y, width: w, height: 1 }, Hit::Tab { pane: pane_id, index: i }));
++            tail_row = row;
++            tail_x = x + w;
++        }
++        let tail_y = row_ys[tail_row];
++        if drop_index == Some(pane.tabs.len()) {
++            buf[(tail_x, tail_y)]
++                .set_symbol("▌")
++                .set_style(Style::default().fg(theme.tab_rail).add_modifier(Modifier::BOLD));
+         }
+-        let is_active = i == active_tab;
+-        let mut style = if is_active { active_style } else { base };
+-        if let Some(notification) =
+-            pane.tabs[i].notification.filter(|notification| notification.unread)
+-        {
+-            style = style.fg(notification_color(&theme, notification));
++        // `+` sits right after the last visible tab (current row); `›`
++        // (when more tabs overflow past row 2) is pinned to row 2's right
++        // edge rather than following the tabs, per the frozen visual spec.
++        if tail_x + plus_w <= max_x {
++            let rect = Rect { x: tail_x, y: tail_y, width: plus_w, height: 1 };
++            buf.set_stringn(rect.x, rect.y, " + ", plus_w as usize, ctrl_style(rect));
++            hits.push((rect, Hit::NewTab { pane: pane_id }));
++        }
++        if overflow {
++            let rect =
++                Rect { x: x1.saturating_sub(arrow_w), y: row_ys[1], width: arrow_w, height: 1 };
++            buf.set_stringn(rect.x, rect.y, "›", 1, ctrl_style(rect));
++            hits.push((rect, Hit::TabScroll { pane: pane_id, delta: 1 }));
++        }
++    } else {
++        // Single-row layout (unchanged): tabs scroll horizontally with
++        // `‹`/`›` arrows when they don't all fit.
++        let mut scroll = app.tab_scroll.get(&pane_id).copied().unwrap_or(0).min(max_scroll);
++        let fits = |scroll: usize| {
++            let left_arrow = if scroll > 0 { arrow_w } else { 0 };
++            let mut budget = inner_w.saturating_sub(left_arrow + plus_w + arrow_w);
++            for w in &widths[scroll..=active_tab.max(scroll)] {
++                if *w > budget {
++                    return false;
++                }
++                budget -= *w;
++            }
++            true
++        };
++        while scroll < active_tab && !fits(scroll) {
++            scroll += 1;
+         }
+-        if tab_drag.is_some_and(|drag| pane.tabs[i].surface == drag.surface) {
+-            style = style.add_modifier(Modifier::DIM);
++        app.tab_scroll.insert(pane_id, scroll);
++
++        let mut x = x0 + 1;
++        if scroll > 0 {
++            let rect = Rect { x, y: bar.y, width: arrow_w, height: 1 };
++            buf.set_stringn(x, bar.y, "‹", 1, ctrl_style(rect));
++            hits.push((rect, Hit::TabScroll { pane: pane_id, delta: -1 }));
++            x += arrow_w;
+         }
+-        buf.set_stringn(x, bar.y, label, w as usize, style);
+-        if tab_cfg.solid_background && is_active {
+-            buf[(x, bar.y)].set_symbol("▎").set_style(style.fg(theme.tab_rail));
++        let mut overflow = false;
++        for (i, label) in labels.iter().enumerate().skip(scroll) {
++            let w = widths[i];
++            // Reserve room for the + button and a possible right arrow.
++            if x + w + plus_w + arrow_w > max_x {
++                overflow = true;
++                break;
++            }
++            let is_active = i == active_tab;
++            let mut style = if is_active { active_style } else { base };
++            if let Some(notification) =
++                pane.tabs[i].notification.filter(|notification| notification.unread)
++            {
++                style = style.fg(notification_color(&theme, notification));
++            }
++            if tab_drag.is_some_and(|drag| pane.tabs[i].surface == drag.surface) {
++                style = style.add_modifier(Modifier::DIM);
++            }
++            buf.set_stringn(x, bar.y, label, w as usize, style);
++            if tab_cfg.solid_background && is_active {
++                buf[(x, bar.y)].set_symbol("▎").set_style(style.fg(theme.tab_rail));
++            }
++            if drop_index == Some(i) && x < max_x {
++                buf[(x, bar.y)]
++                    .set_symbol("▌")
++                    .set_style(Style::default().fg(theme.tab_rail).add_modifier(Modifier::BOLD));
++            }
++            hits.push((
++                Rect { x, y: bar.y, width: w, height: 1 },
++                Hit::Tab { pane: pane_id, index: i },
++            ));
++            x += w;
+         }
+-        if drop_index == Some(i) && x < max_x {
++        if drop_index == Some(pane.tabs.len()) && x < max_x {
+             buf[(x, bar.y)]
+                 .set_symbol("▌")
+                 .set_style(Style::default().fg(theme.tab_rail).add_modifier(Modifier::BOLD));
+         }
+-        hits.push((
+-            Rect { x, y: bar.y, width: w, height: 1 },
+-            Hit::Tab { pane: pane_id, index: i },
+-        ));
+-        x += w;
+-    }
+-    if drop_index == Some(tabs.len()) && x < max_x {
+-        buf[(x, bar.y)]
+-            .set_symbol("▌")
+-            .set_style(Style::default().fg(theme.tab_rail).add_modifier(Modifier::BOLD));
+-    }
+-    if overflow && x + arrow_w <= max_x {
+-        let rect = Rect { x, y: bar.y, width: arrow_w, height: 1 };
+-        buf.set_stringn(x, bar.y, "›", 1, ctrl_style(rect));
+-        hits.push((rect, Hit::TabScroll { pane: pane_id, delta: 1 }));
+-        x += arrow_w;
+-    }
+-    if x + plus_w <= max_x {
+-        let rect = Rect { x, y: bar.y, width: plus_w, height: 1 };
+-        buf.set_stringn(x, bar.y, " + ", plus_w as usize, ctrl_style(rect));
+-        hits.push((rect, Hit::NewTab { pane: pane_id }));
++        if overflow && x + arrow_w <= max_x {
++            let rect = Rect { x, y: bar.y, width: arrow_w, height: 1 };
++            buf.set_stringn(x, bar.y, "›", 1, ctrl_style(rect));
++            hits.push((rect, Hit::TabScroll { pane: pane_id, delta: 1 }));
++            x += arrow_w;
++        }
++        if x + plus_w <= max_x {
++            let rect = Rect { x, y: bar.y, width: plus_w, height: 1 };
++            buf.set_stringn(x, bar.y, " + ", plus_w as usize, ctrl_style(rect));
++            hits.push((rect, Hit::NewTab { pane: pane_id }));
++        }
+     }
+     app.hits.extend(hits);
+ }
+-- 
+2.53.0.windows.2
+

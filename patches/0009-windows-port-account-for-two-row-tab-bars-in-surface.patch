@@ -1,0 +1,255 @@
+From 8705ad43a1f634eb28ccc0785fc361200f528c51 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sun, 26 Jul 2026 23:47:36 +0900
+Subject: [PATCH] windows-port: account for two-row tab bars in surface size
+ hints, clamp tabs.max_width
+
+content_size_for_rect/browser_content_size_for_rect always assumed a
+single-row tab bar (empty tab_widths, max_rows=1), so spawning a new
+tab/split/browser tab on an existing pane that had already grown to two
+rows computed a content rect one row taller than what draw_tab_bar
+actually renders. Thread the pane's real tab label widths and
+tabs.max_rows through terminal_tab_size_hint/browser_tab_size_hint (new
+tab_widths_of helper) so these hints match the live layout. Fresh panes
+(split, new workspace, new screen, startup) still pass an empty slice
+since they start with no tabs, so a single row is correct there.
+
+Also clamp tabs.max_width to 4..=200 on config load. Unclamped, an
+extreme value could make tab_bar_label_widths' `as u16` cast on the
+padded label length wrap around, desyncing tab hit-testing and row
+placement from the rendered label.
+
+Found by codex third-party review of the Phase 6 tab-bar patches.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs    | 96 +++++++++++++++++++-------
+ cmux-tui/crates/cmux-tui/src/config.rs | 12 +++-
+ 2 files changed, 81 insertions(+), 27 deletions(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index 402d993155..fea3e88dff 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -3244,13 +3244,23 @@ fn rail_drag_width(config: &Config, layout: SidebarLayout, kind: RailKind, x: u1
+     clamp_rail_width(desired, configured_max, available)
+ }
+ 
+-fn content_size_for_rect(rect: Rect, scrollbar: ScrollbarPosition) -> Option<(u16, u16)> {
+-    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, false, &[], 1);
++fn content_size_for_rect(
++    rect: Rect,
++    scrollbar: ScrollbarPosition,
++    tab_widths: &[u16],
++    max_rows: u16,
++) -> Option<(u16, u16)> {
++    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, false, tab_widths, max_rows);
+     (content.width > 0 && content.height > 0).then_some((content.width, content.height))
+ }
+ 
+-fn browser_content_size_for_rect(rect: Rect, scrollbar: ScrollbarPosition) -> Option<(u16, u16)> {
+-    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, true, &[], 1);
++fn browser_content_size_for_rect(
++    rect: Rect,
++    scrollbar: ScrollbarPosition,
++    tab_widths: &[u16],
++    max_rows: u16,
++) -> Option<(u16, u16)> {
++    let (_, _, content, _) = pane_parts_for_rect(rect, scrollbar, true, tab_widths, max_rows);
+     (content.width > 0 && content.height > 0).then_some((content.width, content.height))
+ }
+ 
+@@ -3836,7 +3846,8 @@ pub fn run_with_machine_updates(
+     let initial_size = crossterm::terminal::size().ok().map(|(w, h)| {
+         let pane =
+             sidebar_layout_for(&config, true, machine_ui.is_some(), (w, h), None, None).content;
+-        content_size_for_rect(pane, config.scrollbar.position).unwrap_or((1, 1))
++        content_size_for_rect(pane, config.scrollbar.position, &[], config.tabs.max_rows)
++            .unwrap_or((1, 1))
+     });
+     ensure_managed_workspace_guard(&session, machine_ui.as_ref())?;
+     ensure_initial_for_machine_ui(&session, initial_size, machine_ui.as_ref())?;
+@@ -4336,7 +4347,12 @@ impl App {
+             return RenderAction::None;
+         };
+         let preparation = MachineSessionPreparation {
+-            initial_size: content_size_for_rect(self.content_area, self.config.scrollbar.position),
++            initial_size: content_size_for_rect(
++                self.content_area,
++                self.config.scrollbar.position,
++                &[],
++                self.config.tabs.max_rows,
++            ),
+             default_colors: self.default_colors,
+             generation: self.session_generation.wrapping_add(1).max(1),
+             pty_input: self.pty_input.sender(),
+@@ -6370,16 +6386,19 @@ impl App {
+         moved
+     }
+ 
+-    /// Content size for a pane filling `rect`.
+-    fn size_of_rect(&self, rect: Rect) -> Option<(u16, u16)> {
+-        content_size_for_rect(rect, self.config.scrollbar.position)
++    /// Content size for a pane filling `rect`, given the tab-bar widths it
++    /// will render (empty when the pane doesn't exist yet, e.g. a fresh
++    /// split or workspace, so the tab bar is a single row).
++    fn size_of_rect(&self, rect: Rect, tab_widths: &[u16]) -> Option<(u16, u16)> {
++        content_size_for_rect(rect, self.config.scrollbar.position, tab_widths, self.config.tabs.max_rows)
+     }
+ 
+-    /// Size hint for splitting `pane`: the second side of its rect.
++    /// Size hint for splitting `pane`: the second side of its rect. The new
++    /// side starts with no tabs, so the bar is always a single row.
+     fn split_size_hint(&self, pane: PaneId, dir: SplitDir) -> Option<(u16, u16)> {
+         let area = self.pane_areas.iter().find(|a| a.pane == pane)?;
+         let (_, b) = split_sides(area.rect, dir, 0.5);
+-        self.size_of_rect(b)
++        self.size_of_rect(b, &[])
+     }
+ 
+     fn split_pane(&mut self, pane: PaneId, dir: SplitDir) -> anyhow::Result<()> {
+@@ -6397,18 +6416,29 @@ impl App {
+ 
+     fn terminal_tab_size_hint(&self, pane: Option<PaneId>) -> Option<(u16, u16)> {
+         match pane {
+-            Some(pane) => self
+-                .pane_areas
+-                .iter()
+-                .find(|area| area.pane == pane)
+-                .and_then(|area| self.size_of_rect(area.rect)),
++            Some(pane) => {
++                let tab_widths = self.tab_widths_of(pane);
++                self.pane_areas
++                    .iter()
++                    .find(|area| area.pane == pane)
++                    .and_then(|area| self.size_of_rect(area.rect, &tab_widths))
++            }
+             None => self
+                 .active_pane()
+                 .and_then(|pane| self.terminal_tab_size_hint(Some(pane)))
+-                .or_else(|| self.size_of_rect(self.content_area)),
++                .or_else(|| self.size_of_rect(self.content_area, &[])),
+         }
+     }
+ 
++    /// Rendered label widths of `pane`'s current tabs, for size hints that
++    /// need to account for however many rows its tab bar occupies.
++    fn tab_widths_of(&self, pane: PaneId) -> Vec<u16> {
++        self.tree
++            .pane(pane)
++            .map(|p| crate::ui::pane::tab_bar_label_widths(&self.config.tabs, &p.tabs))
++            .unwrap_or_default()
++    }
++
+     fn new_pane_smart(&mut self) -> anyhow::Result<()> {
+         let Some(pane) = self.active_pane() else {
+             return Ok(());
+@@ -6420,7 +6450,7 @@ impl App {
+             let layout = zellij_default_pane_layout(&panes)?;
+             let rect = layout_screen(&layout, self.content_area, Some(PaneId::MAX))
+                 .rect_of(PaneId::MAX)?;
+-            self.size_of_rect(rect)
++            self.size_of_rect(rect, &[])
+         }) else {
+             return Ok(());
+         };
+@@ -6458,7 +6488,7 @@ impl App {
+         if !self.prepare_pty_input_before_mutation() {
+             return Ok(());
+         }
+-        self.session.new_workspace(self.size_of_rect(self.content_area))
++        self.session.new_workspace(self.size_of_rect(self.content_area, &[]))
+     }
+ 
+     fn request_managed_workspace(&mut self, mode: WorkspaceCreationMode) {
+@@ -6805,7 +6835,7 @@ impl App {
+             return Ok(());
+         }
+         let workspace = self.tree.active_workspace().map(|workspace| workspace.id);
+-        self.session.new_screen(workspace, self.size_of_rect(self.content_area))
++        self.session.new_screen(workspace, self.size_of_rect(self.content_area, &[]))
+     }
+ 
+     fn handle_key(&mut self, key: KeyEvent) -> anyhow::Result<RenderAction> {
+@@ -7742,14 +7772,27 @@ impl App {
+ 
+     fn browser_tab_size_hint(&self, pane: Option<PaneId>) -> Option<(u16, u16)> {
+         match pane {
+-            Some(pane) => self.pane_areas.iter().find(|area| area.pane == pane).and_then(|area| {
+-                browser_content_size_for_rect(area.rect, self.config.scrollbar.position)
+-            }),
++            Some(pane) => {
++                let tab_widths = self.tab_widths_of(pane);
++                self.pane_areas.iter().find(|area| area.pane == pane).and_then(|area| {
++                    browser_content_size_for_rect(
++                        area.rect,
++                        self.config.scrollbar.position,
++                        &tab_widths,
++                        self.config.tabs.max_rows,
++                    )
++                })
++            }
+             None => self
+                 .active_pane()
+                 .and_then(|pane| self.browser_tab_size_hint(Some(pane)))
+                 .or_else(|| {
+-                    browser_content_size_for_rect(self.content_area, self.config.scrollbar.position)
++                    browser_content_size_for_rect(
++                        self.content_area,
++                        self.config.scrollbar.position,
++                        &[],
++                        self.config.tabs.max_rows,
++                    )
+                 }),
+         }
+     }
+@@ -11429,7 +11472,10 @@ mod tests {
+     #[test]
+     fn browser_tab_size_hint_uses_omnibar_reduced_content() {
+         let rect = Rect { x: 10, y: 4, width: 80, height: 24 };
+-        assert_eq!(browser_content_size_for_rect(rect, ScrollbarPosition::Column), Some((77, 21)));
++        assert_eq!(
++            browser_content_size_for_rect(rect, ScrollbarPosition::Column, &[], 1),
++            Some((77, 21))
++        );
+     }
+ 
+     #[test]
+diff --git a/cmux-tui/crates/cmux-tui/src/config.rs b/cmux-tui/crates/cmux-tui/src/config.rs
+index 6b78192669..68bf835993 100644
+--- a/cmux-tui/crates/cmux-tui/src/config.rs
++++ b/cmux-tui/crates/cmux-tui/src/config.rs
+@@ -647,7 +647,7 @@ pub struct Tabs {
+     /// Label's minimum width (padding) in cells.
+     pub min_width: u16,
+     /// A single tab label's maximum length in characters, before truncating
+-    /// with an ellipsis.
++    /// with an ellipsis. Out-of-range config values are clamped to 4..=200.
+     pub max_width: u16,
+     /// The tab bar's maximum number of rows when tabs overflow the pane
+     /// width. Valid values are 1 or 2; out-of-range values are clamped
+@@ -1349,7 +1349,9 @@ pub fn load() -> Config {
+         config.tabs.min_width = w.clamp(3, 40);
+     }
+     if let Some(w) = raw.tabs.max_width {
+-        config.tabs.max_width = w;
++        // Truncated label plus its 2 padding spaces gets cast to u16
++        // (tab_bar_label_widths); keep it well clear of that ceiling.
++        config.tabs.max_width = w.clamp(4, 200);
+     }
+     if let Some(r) = raw.tabs.max_rows {
+         config.tabs.max_rows = r.clamp(1, 2);
+@@ -2523,6 +2525,12 @@ mod tests {
+         unsafe { std::env::set_var("CMUX_MUX_CONFIG", &path) };
+         assert_eq!(load().tabs.max_width, 40);
+ 
++        std::fs::write(&path, r#"{"tabs": {"max_width": 0}}"#).unwrap();
++        assert_eq!(load().tabs.max_width, 4);
++
++        std::fs::write(&path, r#"{"tabs": {"max_width": 65535}}"#).unwrap();
++        assert_eq!(load().tabs.max_width, 200);
++
+         // SAFETY: env mutation in tests is serialized by CONFIG_ENV_LOCK.
+         unsafe { std::env::remove_var("CMUX_MUX_CONFIG") };
+         let _ = std::fs::remove_dir_all(&dir);
+-- 
+2.53.0.windows.2
+
