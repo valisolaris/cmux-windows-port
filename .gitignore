@@ -6,6 +6,9 @@ cmux/
 cmux-main/
 # ローカル進捗ログ(非公開)
 ROADMAP.md
+# ローカルツール設定(非公開)
+.claude/
+.zed/
 
 # 非公開: ビルド生成物 / デバッグ用
 # release ビルド済み GPL バイナリ(非同梱)
