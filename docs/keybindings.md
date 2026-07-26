@@ -4,6 +4,7 @@
 
 - `cmux/cmux-tui/crates/cmux-tui/src/config.rs` の `Keys::default()`(prefix と全アクションの既定チャード)
 - `cmux/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs` の `handle_key()`(ファイルサイドバー内のキー)
+- `cmux/cmux-tui/crates/cmux-tui/src/app.rs` の `hit_at()`/`handle_left_up()`/`handle_scroll()`(ファイルサイドバーのマウス操作)
 
 対象コミット: windows-port ブランチ(main = 7652d3b からの一点改造)。既定は tmux 準拠。
 
@@ -129,9 +130,19 @@ Windows 版 crossterm(0.29)は `Event::Paste` を生成しない構造的制約�
 | `c` | 選択ディレクトリへの `cd` をフォーカスペインへ送る |
 | `o` | 選択した `.html` / `.md` を右の新規ペインでブラウザタブとして開く(それ以外は「.html/.md のみ」メッセージ) |
 
+### ファイルサイドバー内のマウス操作
+
+| 操作 | 動作 |
+|---|---|
+| 行のクリック | その行を選択 |
+| ディレクトリ行の `▸`/`▾` マーカーをクリック | 展開/折りたたみ(選択もその行に移動)。マーカー以外の部分をクリックした場合は選択のみで展開はしない |
+| ファイル行のダブルクリック(400ms以内に同じ行を2回クリック) | `Enter` と同じ動作でファイルを開く |
+| マウスホイール | 選択を上下にスクロール(サイドバーが Files ビューのときのみ有効。Workspaces ビューと同じ挙動) |
+
 ### 補足(実装挙動)
 
 - サイドバーは1ディレクトリだけのフラット一覧ではなく、展開済みディレクトリをツリー状にその場へ差し込んで表示する(`▸`=折りたたみ、`▾`=展開済み)。ルート自体(表示上部のパス)はフォーカスペインの cwd に自動追従するが、展開/折りたたみ操作を一度でも行うとその追従は止まる(`~` で再度 reroot するまで固定)。
-- `Enter`/`→` でファイルを開くと `$EDITOR` を右側の新規ペインで起動する(`app.rs` の `FileCommand::OpenEditor` → `Mux::split_with_command`)。既存ペインの内容を上書きしない。
+- `Enter`/`→`/ダブルクリックでファイルを開くと `$EDITOR` を右側の新規ペインで起動する(`app.rs` の `FileCommand::OpenEditor` → `Mux::split_with_command`)。既存ペインの内容を上書きしない。
   `$EDITOR` 未設定/空のときは `vi` にフォールバックするため、**Windows ではランチャで `EDITOR=micro` を設定する**(spec.md D5/D7)。
-- `o` は `file://` URL を組み立て、右側の新規ペインでブラウザタブとして開く(`FileCommand::OpenBrowser` → `file_url()` → `Mux::split_with_browser`)。
+- **`Enter` は常にファイルをテキストエディタで開く**(HTML ファイルであってもソースコードが表示される。ファイル内容をアプリ内表示・レンダリングする機能は無い、という元仕様どおりの挙動)。HTML/MD をレンダリングしてプレビューしたい場合は `o` を使う。
+- `o` は `file://` URL を組み立て、右側の新規ペインでブラウザタブとして開く(`FileCommand::OpenBrowser` → `file_url()` → `Mux::split_with_browser`)。既定では headful Chrome の実ウィンドウに表示されるが、`%APPDATA%\cmux\cmux-tui.json` に `{"browser": {"sixel": true}}` を設定すると、Windows Terminal(Sixel対応版、1.24系で確認済み)上で TUI ペイン内に直接プレビューを描画する(6x6x6色量子化・ディザリングなしの簡易レンダリング)。既定は無効(opt-in)。

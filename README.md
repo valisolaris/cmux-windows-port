@@ -23,14 +23,18 @@ Rust 製 TUI マルチプレクサ **`cmux-tui`** を **Windows 11 でネイテ�
 
 ## このリポジトリの中身
 
-本体は同梱せず、upstream の特定コミットに当てる **3つのパッチ**で Windows 対応を行います
-(いずれも Unix 側の挙動は変えません)。
+本体は同梱せず、upstream の特定コミットに当てる **5つのパッチ**で Windows 対応を行います
+(いずれも Unix 側の挙動は変えません)。`0001`〜`0003` は Phase 2/3(要望①②③の基本実装)、
+`0004`〜`0005` は Phase 4(実機での利用を通じて追加した UX 改善ラウンド)です。詳細な変更点は
+[更新履歴](#更新履歴)を参照してください。
 
 | パッチ | 対象ファイル | 内容 |
 |---|---|---|
 | `0001` | `ghostty-vt-sys/build.rs` | zig へ常に `-Dtarget` を渡す(GNU ホスト環境の `WindowsSdkNotFound` を回避) |
 | `0002` | `ui/graphics.rs` | Windows では端末ケイパビリティのクエリ(DA1/ピクセルサイズ)を送らない(起動時プロンプトへの応答漏れを解消) |
 | `0003` | `sidebar_files/mod.rs` | Windows パスから正しい `file:///C:/…` を組み立てる(ブラウザプレビューの空白表示と CDP タイムアウトを解消) |
+| `0004` | `mux.rs`/`session/mod.rs`/`app.rs`/`sidebar_files/*`/`ui/graphics.rs`ほか | Phase 4 UX改善ラウンド: サイドバーの複数フォルダ同時展開・ファイルを右の新規ペインで開く・Sixel HTML プレビュー(opt-in)・`/copy`貼り付け時の改行暴発修正ほか |
+| `0005` | `app.rs`/`sidebar_files/mod.rs`/`ui/sidebar.rs` | Phase 4 follow-ups: スクロール位置保持の修正・マウスホイール対応・フォルダ▸クリックでの展開/折りたたみ・ファイルのダブルクリックオープン |
 
 ## パッチを当ててビルドする
 
@@ -56,7 +60,9 @@ git checkout 7652d3b1cf        # パッチはこのコミットの上に当て�
 # 2) このリポジトリの patches/ を順に適用(作者情報付きで当てるなら git am)
 git am /path/to/cmux-windows-port/patches/0001-*.patch `
        /path/to/cmux-windows-port/patches/0002-*.patch `
-       /path/to/cmux-windows-port/patches/0003-*.patch
+       /path/to/cmux-windows-port/patches/0003-*.patch `
+       /path/to/cmux-windows-port/patches/0004-*.patch `
+       /path/to/cmux-windows-port/patches/0005-*.patch
 #   コミット履歴が不要なら:  git apply /path/to/.../patches/000*.patch
 
 # 3) ビルド用の環境変数(この呼び出し内でのみ設定)
@@ -119,7 +125,9 @@ cmux-windows-port/
 ├─ patches/
 │  ├─ 0001-*.patch      ← build.rs(WindowsSdkNotFound 回避)
 │  ├─ 0002-*.patch      ← graphics.rs(端末クエリ抑止)
-│  └─ 0003-*.patch      ← sidebar_files(file:/// URL 生成)
+│  ├─ 0003-*.patch      ← sidebar_files(file:/// URL 生成)
+│  ├─ 0004-*.patch      ← Phase 4 UX改善ラウンド(複数フォルダ展開・右split新規ペイン・Sixelプレビュー等)
+│  └─ 0005-*.patch      ← Phase 4 follow-ups(スクロール修正・マウスホイール・▸クリック展開・ダブルクリック)
 ├─ docs/
 │  ├─ manual.html       ← 利用マニュアル(単一 HTML・目次アンカー遷移)
 │  └─ keybindings.md    ← 既定キーバインド一覧(コードから抽出)
@@ -135,3 +143,31 @@ cmux-windows-port/
 
 > **注**: `bin/cmux-tui.exe`(ビルド生成物=GPL バイナリ)は同梱しません。上記手順でビルドして
 > `bin/` に配置してください。
+
+## 更新履歴
+
+### Phase 4 — UX改善ラウンド(2026-07-26、パッチ `0004`・`0005`)
+
+Phase 2/3 公開後、実機での利用を通じて次の改善を実装。全項目、実機確認 pass 済み。
+
+- **ファイルサイドバーのツリー表示** — 複数フォルダを同時展開できるエクスプローラー風ツリーに刷新。
+  フォルダ左の `▸` クリックまたは `→`/`←` キーで展開・折りたたみ。
+- **ファイルを新規ペインで開く** — サイドバーから `Enter`(または対象行のダブルクリック)でファイルを開くと、
+  既存ペインを上書きせず右に新しいペインが作られてそこで開く。`o` キーでの HTML ブラウザプレビューも同様。
+- **タブグループの統合** — 2つのペインのタブをマウスドラッグで1つのタブグループへ統合できる。
+- **HTML の in-TUI プレビュー(opt-in)** — `browser.sixel: true` を設定すると、Windows Terminal の
+  Sixel 対応を使って HTML を TUI ペイン内で直接プレビューできる(既定は無効。既定の headful Chrome
+  プレビューはそのまま利用可能)。
+- **`Ctrl+B` → `Shift+S` でサイドバーにフォーカスできない件** — 実装のバグではなく、`Ctrl+B` 連続押下時の
+  tmux 互換挙動・`focus-sidebar` のトグル仕様・日本語 IME が影響することが判明。
+  [`docs/keybindings.md`](docs/keybindings.md) に注記済み。
+- そのほか: `Alt+X` でペイン/タブを閉じる、サイドバーに全ペイン×全タブのタイトル一覧を集約表示、
+  `/copy` 貼り付け時に改行のたびに途中送信されていた問題の修正、ファイルサイドバーのマウスホイール
+  スクロール対応。
+
+詳細な調査・実装経緯は [`spec/handoff-phase4.md`](spec/handoff-phase4.md) を参照。
+
+### Phase 2/3 — 初期実装(2026-07-25、パッチ `0001`〜`0003`)
+
+要望①②③(ターミナル多重化・コード閲覧・HTML プレビュー)の基本実装と受け入れ検証。
+詳細は [`spec/spec.md`](spec/spec.md) / [`spec/handoff.md`](spec/handoff.md)。

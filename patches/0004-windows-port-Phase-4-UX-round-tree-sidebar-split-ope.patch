@@ -1,0 +1,2103 @@
+From e00ca0bfbb8227e5fa906b1b376eaa9fac44c460 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sun, 26 Jul 2026 00:27:28 +0900
+Subject: [PATCH 4/5] windows-port: Phase 4 UX round (tree sidebar, split-open,
+ Sixel, paste-burst fix)
+
+Bundles the Phase 4 UX-improvement round agreed with the user on top of
+the frozen spec (spec/spec.md, spec/decisions.md unchanged):
+
+- Sidebar file tree: multiple directories can stay expanded at once
+  (sidebar_files/{mod,files,navigation}.rs), with a scroll-offset fix so
+  clicking an already-visible row doesn't snap it to the bottom line
+  (ui/sidebar.rs, regression test in sidebar_files::tests).
+- Opening a file from the sidebar (Enter/o) now splits a new pane to the
+  right instead of overwriting the active pane's tabs
+  (Mux::split_with_command/split_with_browser in mux.rs, session/mod.rs,
+  app.rs).
+- Sixel-encoded in-TUI HTML preview behind an opt-in browser.sixel config
+  flag, since Windows Terminal stable supports Sixel but not kitty
+  graphics (ui/graphics.rs, ui/graphics_writer.rs, png crate dependency).
+- Alt+X to close the active tab/pane, and a Sessions sidebar view listing
+  every tab across every pane/screen/workspace (app.rs, config.rs,
+  ui/mod.rs, ui/sidebar.rs, localization.rs).
+- Paste-burst workaround for Windows crossterm 0.29 not emitting
+  Event::Paste: batches same-frame character keys into a synthetic paste
+  event so multi-line clipboard paste doesn't submit line-by-line
+  (app.rs: read_input_batch/pasteable_char/finish_paste_burst).
+
+Real-machine verified by the user: tab-group drag&drop merge, Sixel
+preview, clipboard paste, and the sidebar tree (after the scroll-offset
+fix above). Opening a file with Enter into a new split pane is still
+unverified on real hardware; see spec/handoff-phase4.md.
+---
+ cmux-tui/Cargo.lock                           |  64 ++++
+ cmux-tui/Cargo.toml                           |   3 +
+ cmux-tui/crates/cmux-tui-core/src/mux.rs      |  39 +++
+ cmux-tui/crates/cmux-tui/Cargo.toml           |   1 +
+ cmux-tui/crates/cmux-tui/src/app.rs           | 292 +++++++++++++++-
+ cmux-tui/crates/cmux-tui/src/config.rs        |  43 ++-
+ cmux-tui/crates/cmux-tui/src/localization.rs  |   3 +
+ cmux-tui/crates/cmux-tui/src/session/mod.rs   |  40 +++
+ .../cmux-tui/src/sidebar_files/files.rs       |  16 +-
+ .../crates/cmux-tui/src/sidebar_files/mod.rs  | 330 ++++++++++++++----
+ .../cmux-tui/src/sidebar_files/navigation.rs  |  18 +-
+ cmux-tui/crates/cmux-tui/src/ui/graphics.rs   | 281 ++++++++++++++-
+ .../crates/cmux-tui/src/ui/graphics_writer.rs |  13 +-
+ cmux-tui/crates/cmux-tui/src/ui/mod.rs        |   2 +-
+ cmux-tui/crates/cmux-tui/src/ui/sidebar.rs    | 141 +++++++-
+ 15 files changed, 1168 insertions(+), 118 deletions(-)
+
+diff --git a/cmux-tui/Cargo.lock b/cmux-tui/Cargo.lock
+index 76713a60fc..3ce4844c35 100644
+--- a/cmux-tui/Cargo.lock
++++ b/cmux-tui/Cargo.lock
+@@ -2,6 +2,12 @@
+ # It is not intended for manual editing.
+ version = 4
+ 
++[[package]]
++name = "adler2"
++version = "2.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
++
+ [[package]]
+ name = "aho-corasick"
+ version = "1.1.4"
+@@ -201,6 +207,7 @@ dependencies = [
+  "getrandom 0.3.4",
+  "ghostty-vt",
+  "libc",
++ "png",
+  "ratatui",
+  "serde",
+  "serde_json",
+@@ -281,6 +288,15 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "crc32fast"
++version = "1.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
++dependencies = [
++ "cfg-if",
++]
++
+ [[package]]
+ name = "critical-section"
+ version = "1.2.0"
+@@ -486,6 +502,15 @@ version = "2.4.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
+ 
++[[package]]
++name = "fdeflate"
++version = "0.3.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
++dependencies = [
++ "simd-adler32",
++]
++
+ [[package]]
+ name = "filedescriptor"
+ version = "0.8.3"
+@@ -509,6 +534,16 @@ version = "0.4.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
+ 
++[[package]]
++name = "flate2"
++version = "1.1.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
++dependencies = [
++ "crc32fast",
++ "miniz_oxide",
++]
++
+ [[package]]
+ name = "fnv"
+ version = "1.0.7"
+@@ -848,6 +883,16 @@ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+ 
++[[package]]
++name = "miniz_oxide"
++version = "0.8.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
++dependencies = [
++ "adler2",
++ "simd-adler32",
++]
++
+ [[package]]
+ name = "mio"
+ version = "1.2.2"
+@@ -1092,6 +1137,19 @@ version = "0.2.17"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+ 
++[[package]]
++name = "png"
++version = "0.17.16"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
++dependencies = [
++ "bitflags 1.3.2",
++ "crc32fast",
++ "fdeflate",
++ "flate2",
++ "miniz_oxide",
++]
++
+ [[package]]
+ name = "portable-atomic"
+ version = "1.13.1"
+@@ -1547,6 +1605,12 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "simd-adler32"
++version = "0.3.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
++
+ [[package]]
+ name = "siphasher"
+ version = "1.0.3"
+diff --git a/cmux-tui/Cargo.toml b/cmux-tui/Cargo.toml
+index d633ac3b3a..773cb9f4c4 100644
+--- a/cmux-tui/Cargo.toml
++++ b/cmux-tui/Cargo.toml
+@@ -50,6 +50,9 @@ bindgen = "0.72"
+ smallvec = "1"
+ getrandom = "0.3"
+ zeroize = "1.9"
++# Pure-Rust PNG decode only (no system libpng/zlib dependency), used to turn
++# the browser pane's CDP screenshot frames into pixels for Sixel encoding.
++png = "0.17"
+ 
+ [profile.release]
+ lto = "thin"
+diff --git a/cmux-tui/crates/cmux-tui-core/src/mux.rs b/cmux-tui/crates/cmux-tui-core/src/mux.rs
+index 3ba745957e..3e3ac23ebd 100644
+--- a/cmux-tui/crates/cmux-tui-core/src/mux.rs
++++ b/cmux-tui/crates/cmux-tui-core/src/mux.rs
+@@ -3262,6 +3262,45 @@ impl Mux {
+     ) -> anyhow::Result<Arc<Surface>> {
+         let cwd = self.pane_cwd(target);
+         let surface = self.spawn_surface(cwd, size)?;
++        self.split_with_surface(target, dir, surface)
++    }
++
++    /// Split like [`Mux::split`], but spawn the new pane's surface running
++    /// `argv` instead of the default shell. Used by the file sidebar's
++    /// "open in a new pane" commands so opening a file doesn't overwrite the
++    /// content of the pane that had focus.
++    pub fn split_with_command(
++        self: &Arc<Self>,
++        target: PaneId,
++        dir: SplitDir,
++        argv: Vec<String>,
++        cwd: Option<String>,
++        size: Option<(u16, u16)>,
++    ) -> anyhow::Result<Arc<Surface>> {
++        let cwd = cwd.or_else(|| self.pane_cwd(target));
++        let surface = self.spawn_surface_with_command(cwd, size, Some(argv))?;
++        self.split_with_surface(target, dir, surface)
++    }
++
++    /// Split like [`Mux::split`], but spawn the new pane's surface as a
++    /// browser tab pointed at `url` instead of a shell.
++    pub fn split_with_browser(
++        self: &Arc<Self>,
++        target: PaneId,
++        dir: SplitDir,
++        url: String,
++        size: Option<(u16, u16)>,
++    ) -> anyhow::Result<Arc<Surface>> {
++        let surface = self.spawn_browser_surface(url, size, None);
++        self.split_with_surface(target, dir, surface)
++    }
++
++    fn split_with_surface(
++        self: &Arc<Self>,
++        target: PaneId,
++        dir: SplitDir,
++        surface: Arc<Surface>,
++    ) -> anyhow::Result<Arc<Surface>> {
+         let pane_id = self.next_id();
+         let split_id = self.next_id();
+         let active_at = self.next_active_at();
+diff --git a/cmux-tui/crates/cmux-tui/Cargo.toml b/cmux-tui/crates/cmux-tui/Cargo.toml
+index 120d10e1c9..85c2de5f01 100644
+--- a/cmux-tui/crates/cmux-tui/Cargo.toml
++++ b/cmux-tui/crates/cmux-tui/Cargo.toml
+@@ -31,3 +31,4 @@ getrandom.workspace = true
+ libc.workspace = true
+ smallvec.workspace = true
+ zeroize.workspace = true
++png.workspace = true
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index d1d40a7adb..c358b677d3 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -1844,6 +1844,35 @@ impl OrderedSession {
+         Ok(())
+     }
+ 
++    pub fn split_with_command(
++        &self,
++        pane: PaneId,
++        dir: SplitDir,
++        argv: Vec<String>,
++        cwd: Option<String>,
++        size: Option<(u16, u16)>,
++    ) -> anyhow::Result<()> {
++        self.enqueue_with_completion("split pane with command", true, move |session| {
++            let surface = session.split_with_command(pane, dir, argv, cwd, size)?;
++            Ok(Some(SessionCompletionAction::SurfaceCreated { surface }))
++        });
++        Ok(())
++    }
++
++    pub fn split_with_browser(
++        &self,
++        pane: PaneId,
++        dir: SplitDir,
++        url: String,
++        size: Option<(u16, u16)>,
++    ) -> anyhow::Result<()> {
++        self.enqueue_with_completion("split pane with browser tab", true, move |session| {
++            let surface = session.split_with_browser(pane, dir, url, size)?;
++            Ok(Some(SessionCompletionAction::BrowserTabCreated { surface }))
++        });
++        Ok(())
++    }
++
+     pub fn new_pane(&self, pane: PaneId, size: Option<(u16, u16)>) -> anyhow::Result<()> {
+         self.enqueue_with_completion("create pane", true, move |session| {
+             let surface = session.new_pane(pane, size)?;
+@@ -1998,6 +2027,75 @@ enum WorkspaceRailTarget {
+     Create(Option<WorkspaceCreationMode>),
+ }
+ 
++/// How long to wait, after one pasteable keystroke, for the next one before
++/// giving up and treating it as an ordinary single keypress.
++///
++/// windows-port: crossterm's Windows event source never emits
++/// `Event::Paste` (`ReadConsoleInputW` is turned into `Event::Key` one
++/// character at a time, unlike the Unix source which parses bracketed-paste
++/// escapes) — see `ui/graphics.rs`'s `probe_kitty_graphics` doc for the
++/// same crossterm-Windows-source class of limitation. So a paste like
++/// `/copy`'s clipboard text arrives here as a burst of individual key
++/// events, including `Enter` for every embedded newline, and each of those
++/// would otherwise submit whatever's typed so far. `read_input_batch`
++/// coalesces a fast burst of such keys back into a single `Event::Paste`,
++/// which the existing (already-correct) bracketed-paste handling in
++/// `paste`/`paste_sidebar` then wraps and sends as one write. A human typing
++/// has keystroke intervals in the tens of milliseconds at the very fastest;
++/// this window is comfortably below that so ordinary typing is unaffected.
++const PASTE_BURST_GAP: Duration = Duration::from_millis(4);
++
++/// A key that could plausibly be one character of a pasted string: a plain
++/// (optionally shifted) printable character, or Enter for an embedded
++/// newline. Anything else (control chords, arrows, function keys, key-up
++/// events) ends a burst immediately.
++fn pasteable_char(key: &KeyEvent) -> Option<char> {
++    if key.kind != KeyEventKind::Press {
++        return None;
++    }
++    match key.code {
++        KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => Some(c),
++        KeyCode::Enter if key.modifiers.is_empty() => Some('\n'),
++        _ => None,
++    }
++}
++
++/// Reads one crossterm event, then — if it's a pasteable key — keeps
++/// reading with a short timeout for as long as pasteable keys keep arriving
++/// within `PASTE_BURST_GAP` of each other. A burst of 2+ keys collapses to
++/// a single `Event::Paste`; a lone key (normal typing) is returned as the
++/// `Event::Key` crossterm gave it, unchanged.
++fn read_input_batch() -> std::io::Result<Vec<Event>> {
++    let first = crossterm::event::read()?;
++    let Event::Key(first_key) = first else {
++        return Ok(vec![first]);
++    };
++    if pasteable_char(&first_key).is_none() {
++        return Ok(vec![Event::Key(first_key)]);
++    }
++    let mut burst = vec![first_key];
++    loop {
++        if !crossterm::event::poll(PASTE_BURST_GAP)? {
++            return Ok(finish_paste_burst(burst, None));
++        }
++        match crossterm::event::read()? {
++            Event::Key(key) if pasteable_char(&key).is_some() => burst.push(key),
++            other => return Ok(finish_paste_burst(burst, Some(other))),
++        }
++    }
++}
++
++fn finish_paste_burst(burst: Vec<KeyEvent>, trailing: Option<Event>) -> Vec<Event> {
++    let mut out = Vec::with_capacity(2);
++    if let [only] = burst.as_slice() {
++        out.push(Event::Key(*only));
++    } else {
++        out.push(Event::Paste(burst.iter().filter_map(pasteable_char).collect()));
++    }
++    out.extend(trailing);
++    out
++}
++
+ fn rail_page_size(area: Option<Rect>) -> usize {
+     area.map_or(1, |area| usize::from(area.height.saturating_sub(1)).saturating_div(3).max(1))
+ }
+@@ -2057,6 +2155,12 @@ pub enum Hit {
+     SidebarFile {
+         index: usize,
+     },
++    /// A row in the sessions sidebar: one pane's tab, possibly in a
++    /// workspace/screen other than the one currently on screen.
++    SessionTab {
++        pane: PaneId,
++        tab_index: usize,
++    },
+     /// The active filter editor in the built-in files sidebar footer.
+     SidebarFilterInput,
+     /// Status-bar screen entry.
+@@ -2928,6 +3032,11 @@ pub struct App {
+     pub(crate) machine_footer_scroll: usize,
+     pub(crate) workspace_rail_scroll: usize,
+     pub(crate) workspace_footer_scroll: usize,
++    /// Selected row in the sessions sidebar (index into its flattened
++    /// pane/tab list, not a pane or tab id — the list is rebuilt every
++    /// frame from `self.tree`).
++    pub(crate) sidebar_session_selection: usize,
++    pub(crate) sidebar_session_scroll: usize,
+     pub(crate) machine_rail_follow_selection: bool,
+     pub(crate) workspace_rail_follow_selection: bool,
+     sidebar_followed_surface: Option<SurfaceId>,
+@@ -3744,16 +3853,30 @@ pub fn run_with_machine_updates(
+     if session_available {
+         session.set_cell_pixel_size(cell_pixels.0, cell_pixels.1);
+     }
+-    let graphics_supported = crate::ui::graphics::probe_kitty_graphics();
++    // Sixel can't be probed the way kitty graphics is (see
++    // `probe_kitty_graphics`'s windows-port note: no way to drain a reply on
++    // Windows), so it's opt-in via config rather than auto-detected. When
++    // enabled it takes priority over the kitty probe.
++    let graphics_protocol = if config.browser.sixel {
++        Some(crate::ui::graphics::GraphicsProtocol::Sixel)
++    } else if crate::ui::graphics::probe_kitty_graphics() {
++        Some(crate::ui::graphics::GraphicsProtocol::Kitty)
++    } else {
++        None
++    };
++    let graphics_supported = graphics_protocol.is_some();
+ 
+     // Crossterm input → app channel. Start this after startup terminal
+     // probes so DA / window-size responses are not consumed as key input.
+     let input_tx = tx.clone();
+     std::thread::Builder::new().name("input".into()).spawn({
+         move || {
+-            while let Ok(event) = crossterm::event::read() {
+-                if input_tx.send(AppEvent::Input(event)).is_err() {
+-                    break;
++            loop {
++                let Ok(events) = read_input_batch() else { break };
++                for event in events {
++                    if input_tx.send(AppEvent::Input(event)).is_err() {
++                        return;
++                    }
+                 }
+             }
+         }
+@@ -3774,8 +3897,10 @@ pub fn run_with_machine_updates(
+             return Err(e.into());
+         }
+     };
+-    let graphics_writer =
+-        if graphics_supported { Some(GraphicsWriter::spawn(stdout_lock.clone())?) } else { None };
++    let graphics_writer = match graphics_protocol {
++        Some(protocol) => Some(GraphicsWriter::spawn(stdout_lock.clone(), protocol)?),
++        None => None,
++    };
+ 
+     let sidebar_view = config.sidebar.view;
+     let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+@@ -3819,6 +3944,8 @@ pub fn run_with_machine_updates(
+         machine_footer_scroll: 0,
+         workspace_rail_scroll: 0,
+         workspace_footer_scroll: 0,
++        sidebar_session_selection: 0,
++        sidebar_session_scroll: 0,
+         machine_rail_follow_selection: true,
+         workspace_rail_follow_selection: true,
+         sidebar_followed_surface: None,
+@@ -4996,6 +5123,7 @@ impl App {
+                 rect: area.content,
+                 seq: frame.seq,
+                 data_b64: frame.data_b64,
++                cell_pixels: self.cell_pixels,
+             });
+         }
+         placements
+@@ -6982,6 +7110,20 @@ impl App {
+                     }
+                 }
+             }
++            SidebarView::Sessions => {
++                let rows = crate::ui::sidebar::session_rows(self);
++                let page = rail_page_size(self.sidebar_layout.workspace);
++                if let Some(next) =
++                    rail_navigation_index(key, self.sidebar_session_selection, rows.len(), page)
++                {
++                    self.sidebar_session_selection = next;
++                } else if key.code == KeyCode::Enter
++                    && let Some(row) = rows.get(self.sidebar_session_selection)
++                {
++                    self.focus = FocusTarget::Pane;
++                    self.focus_pane_tab_anywhere(row.pane, Some(row.tab_index));
++                }
++            }
+         }
+         Ok(RenderAction::Draw)
+     }
+@@ -7023,6 +7165,10 @@ impl App {
+                 }
+             }
+             FileCommand::OpenEditor(path) => {
++                let Some(pane) = self.active_pane() else {
++                    self.sidebar_files.set_message("no focused pane");
++                    return;
++                };
+                 let editor = std::env::var("EDITOR")
+                     .ok()
+                     .filter(|value| !value.is_empty())
+@@ -7032,18 +7178,29 @@ impl App {
+                     .unwrap_or_else(|| std::path::Path::new("/"))
+                     .to_string_lossy()
+                     .into_owned();
+-                self.session.run_command(
++                let hint = self.split_size_hint(pane, SplitDir::Right);
++                if !self.prepare_pty_input_before_mutation() {
++                    return;
++                }
++                self.session.split_with_command(
++                    pane,
++                    SplitDir::Right,
+                     vec![editor, path.to_string_lossy().into_owned()],
+-                    self.active_pane(),
+                     Some(cwd),
+-                    self.terminal_tab_size_hint(self.active_pane()),
++                    hint,
+                 )
+             }
+-            FileCommand::OpenBrowser(path) => self.session.new_browser_tab(
+-                file_url(&path),
+-                self.active_pane(),
+-                self.browser_tab_size_hint(self.active_pane()),
+-            ),
++            FileCommand::OpenBrowser(path) => {
++                let Some(pane) = self.active_pane() else {
++                    self.sidebar_files.set_message("no focused pane");
++                    return;
++                };
++                let hint = self.split_size_hint(pane, SplitDir::Right);
++                if !self.prepare_pty_input_before_mutation() {
++                    return;
++                }
++                self.session.split_with_browser(pane, SplitDir::Right, file_url(&path), hint)
++            }
+         };
+         match result {
+             Ok(()) => self.sidebar_files.set_message("sent to focused pane"),
+@@ -7930,6 +8087,11 @@ impl App {
+                 self.workspace_rail_selection = WorkspaceRailSelection::Workspace;
+                 self.workspace_rail_follow_selection = true;
+             }
++            SidebarView::Sessions => {
++                let rows = crate::ui::sidebar::session_rows(self);
++                self.sidebar_session_selection =
++                    rows.iter().position(|row| row.active).unwrap_or(0);
++            }
+         }
+     }
+ 
+@@ -8959,6 +9121,37 @@ impl App {
+         }
+     }
+ 
++    /// Bring `pane`'s tab at `tab_index` into view, switching workspace
++    /// and/or screen first if it isn't in the currently active one. Used by
++    /// the sessions sidebar: selecting any pane/tab anywhere should focus it
++    /// for real, not just highlight a row that's off screen.
++    fn focus_pane_tab_anywhere(&mut self, pane: PaneId, tab_index: Option<usize>) {
++        let Some((workspace_index, screen_index)) =
++            self.tree.workspaces.iter().enumerate().find_map(|(wi, workspace)| {
++                workspace
++                    .screens
++                    .iter()
++                    .position(|screen| screen.panes.iter().any(|candidate| candidate.id == pane))
++                    .map(|si| (wi, si))
++            })
++        else {
++            return;
++        };
++        if workspace_index != self.tree.active_workspace {
++            self.select_workspace_for_client(Some(workspace_index), None);
++        }
++        let already_active_screen = self
++            .tree
++            .workspaces
++            .get(workspace_index)
++            .is_some_and(|workspace| workspace.active_screen == screen_index);
++        if !already_active_screen {
++            self.select_screen_for_client(Some(screen_index), None);
++        }
++        self.focus_pane_after_input(pane);
++        self.select_tab_for_client(Some(pane), tab_index, None);
++    }
++
+     fn terminal_input_rect(&self, area: &PaneArea) -> Option<Rect> {
+         self.rendered_terminal_bounds.get(&area.surface).copied()
+     }
+@@ -9326,6 +9519,10 @@ impl App {
+                     self.focus = FocusTarget::WorkspaceRail;
+                     self.sidebar_files.select(index);
+                 }
++                Hit::SessionTab { pane, tab_index } => {
++                    self.focus = FocusTarget::Pane;
++                    self.focus_pane_tab_anywhere(pane, Some(tab_index));
++                }
+                 Hit::SidebarFilterInput => {
+                     self.focus = FocusTarget::WorkspaceRail;
+                     if let Some(area) =
+@@ -10309,10 +10506,10 @@ mod tests {
+         SessionEventSender, SidebarLayout, SidebarPluginSyncClaim, SidebarPluginSyncState,
+         SurfaceResizeDecision, SurfaceResizeOwnership, WorkspaceRailSelection,
+         browser_content_size_for_rect, browser_hover_forward_allowed, client_menu_item,
+-        forward_mux_event, forward_mux_events, pane_context_menu_groups, pane_parts_for_rect,
+-        prepare_ordered_session, preserve_client_view, rail_drag_width,
+-        record_surface_resize_dispatch_result, sidebar_plugin_status_settles_passive_claim,
+-        start_ordered_session,
++        finish_paste_burst, forward_mux_event, forward_mux_events, pane_context_menu_groups,
++        pane_parts_for_rect, pasteable_char, prepare_ordered_session, preserve_client_view,
++        rail_drag_width, record_surface_resize_dispatch_result,
++        sidebar_plugin_status_settles_passive_claim, start_ordered_session,
+     };
+     use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+     use std::path::PathBuf;
+@@ -10360,6 +10557,63 @@ mod tests {
+         AppEvent::SessionMutationSettled { outcome, routing: false }
+     }
+ 
++    #[test]
++    fn pasteable_char_accepts_plain_and_shifted_chars_and_bare_enter() {
++        let key = |code, modifiers| KeyEvent::new(code, modifiers);
++        assert_eq!(pasteable_char(&key(KeyCode::Char('a'), KeyModifiers::NONE)), Some('a'));
++        assert_eq!(pasteable_char(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)), Some('A'));
++        assert_eq!(pasteable_char(&key(KeyCode::Enter, KeyModifiers::NONE)), Some('\n'));
++    }
++
++    #[test]
++    fn pasteable_char_rejects_control_chords_arrows_and_key_up() {
++        assert_eq!(
++            pasteable_char(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
++            None
++        );
++        assert_eq!(pasteable_char(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)), None);
++        assert_eq!(
++            pasteable_char(&KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
++            None
++        );
++        let mut key_up = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
++        key_up.kind = crossterm::event::KeyEventKind::Release;
++        assert_eq!(pasteable_char(&key_up), None);
++    }
++
++    #[test]
++    fn finish_paste_burst_leaves_a_lone_key_untouched() {
++        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
++        assert_eq!(finish_paste_burst(vec![key], None), vec![Event::Key(key)]);
++    }
++
++    #[test]
++    fn finish_paste_burst_coalesces_multiple_keys_into_one_paste_event() {
++        let burst = vec![
++            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
++            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
++            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
++            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
++        ];
++        assert_eq!(
++            finish_paste_burst(burst, None),
++            vec![Event::Paste("hi\n!".to_string())]
++        );
++    }
++
++    #[test]
++    fn finish_paste_burst_appends_the_key_that_ended_the_burst() {
++        let burst = vec![
++            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
++            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
++        ];
++        let trailing = Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
++        assert_eq!(
++            finish_paste_burst(burst, Some(trailing.clone())),
++            vec![Event::Paste("hi".to_string()), trailing]
++        );
++    }
++
+     #[test]
+     fn pane_context_menu_groups_current_tab_creation_layout_and_ids() {
+         let pane = 7;
+@@ -15921,6 +16175,8 @@ mod tests {
+             machine_footer_scroll: 0,
+             workspace_rail_scroll: 0,
+             workspace_footer_scroll: 0,
++            sidebar_session_selection: 0,
++            sidebar_session_scroll: 0,
+             machine_rail_follow_selection: true,
+             workspace_rail_follow_selection: true,
+             sidebar_followed_surface: None,
+diff --git a/cmux-tui/crates/cmux-tui/src/config.rs b/cmux-tui/crates/cmux-tui/src/config.rs
+index 2bb00d348b..7c2e9200a0 100644
+--- a/cmux-tui/crates/cmux-tui/src/config.rs
++++ b/cmux-tui/crates/cmux-tui/src/config.rs
+@@ -540,6 +540,7 @@ struct RawBrowser {
+     ephemeral: Option<bool>,
+     max_capture_megapixels: Option<f64>,
+     capture_scale: Option<f64>,
++    sixel: Option<bool>,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+@@ -749,13 +750,18 @@ pub enum SidebarView {
+     #[default]
+     Files,
+     Workspaces,
++    /// Every pane's tabs (shells, editors, browser tabs, ...) across every
++    /// workspace and screen, flattened into one list. Lets the user see and
++    /// jump to background work that isn't in the currently visible screen.
++    Sessions,
+ }
+ 
+ impl SidebarView {
+     pub fn toggled(self) -> Self {
+         match self {
+             Self::Files => Self::Workspaces,
+-            Self::Workspaces => Self::Files,
++            Self::Workspaces => Self::Sessions,
++            Self::Sessions => Self::Files,
+         }
+     }
+ }
+@@ -764,8 +770,9 @@ fn parse_sidebar_view(value: &str) -> Result<SidebarView, String> {
+     match value {
+         "files" => Ok(SidebarView::Files),
+         "workspaces" => Ok(SidebarView::Workspaces),
++        "sessions" => Ok(SidebarView::Sessions),
+         _ => Err(format!(
+-            "cmux-tui: ignoring unknown sidebar.view {value:?}; expected \"files\" or \"workspaces\""
++            "cmux-tui: ignoring unknown sidebar.view {value:?}; expected \"files\", \"workspaces\", or \"sessions\""
+         )),
+     }
+ }
+@@ -781,6 +788,12 @@ pub struct Browser {
+     pub ephemeral: bool,
+     pub max_capture_megapixels: f64,
+     pub capture_scale: Option<f64>,
++    /// Render the browser pane in-TUI as a Sixel image instead of the
++    /// "terminal has no kitty graphics support" placeholder. Off by
++    /// default: unlike kitty graphics, there's no reply-based way to probe
++    /// Sixel support on Windows (see `probe_kitty_graphics`), so this is
++    /// opt-in until the user confirms their terminal actually renders it.
++    pub sixel: bool,
+ }
+ 
+ impl Default for Browser {
+@@ -795,6 +808,7 @@ impl Default for Browser {
+             ephemeral: false,
+             max_capture_megapixels: TRANSPORT_SAFE_CAPTURE_MEGAPIXELS,
+             capture_scale: None,
++            sixel: false,
+         }
+     }
+ }
+@@ -951,6 +965,7 @@ impl Default for Keys {
+                 bind(KeyCode::Char('"'), Action::SplitDown),
+                 bind(KeyCode::Char('x'), Action::ClosePane),
+                 bind(KeyCode::Char('X'), Action::CloseTab),
++                alt(KeyCode::Char('x'), Action::CloseTab),
+                 bind(KeyCode::Char(','), Action::RenameScreen),
+                 bind(KeyCode::Char('$'), Action::RenameWorkspace),
+                 bind(KeyCode::Char('&'), Action::CloseScreen),
+@@ -1468,6 +1483,9 @@ pub fn load() -> Config {
+             );
+         }
+     }
++    if let Some(sixel) = raw.browser.sixel {
++        config.browser.sixel = sixel;
++    }
+     if let Some(position) = raw.scrollbar.position {
+         config.scrollbar.position = position;
+     }
+@@ -2524,11 +2542,19 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn sidebar_view_toggles_through_all_three_views_and_back() {
++        assert_eq!(SidebarView::Files.toggled(), SidebarView::Workspaces);
++        assert_eq!(SidebarView::Workspaces.toggled(), SidebarView::Sessions);
++        assert_eq!(SidebarView::Sessions.toggled(), SidebarView::Files);
++    }
++
+     #[test]
+     fn sidebar_view_defaults_parses_and_unknown_values_fall_back_with_warning() {
+         assert_eq!(Sidebar::default().view, SidebarView::Workspaces);
+         assert_eq!(parse_sidebar_view("files"), Ok(SidebarView::Files));
+         assert_eq!(parse_sidebar_view("workspaces"), Ok(SidebarView::Workspaces));
++        assert_eq!(parse_sidebar_view("sessions"), Ok(SidebarView::Sessions));
+ 
+         let warning = parse_sidebar_view("tree").unwrap_err();
+         assert!(warning.contains("unknown sidebar.view \"tree\""));
+@@ -2552,6 +2578,15 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn alt_x_is_modeless_close_tab_default() {
++        let keys = Keys::default();
++        assert_eq!(
++            keys.modeless_action_for(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)),
++            Some(Action::CloseTab)
++        );
++    }
++
+     #[test]
+     fn new_action_names_parse_from_config_overrides() {
+         let cases = [
+@@ -2664,7 +2699,7 @@ mod tests {
+         let path = dir.join("mux.json");
+         std::fs::write(
+             &path,
+-            r##"{"browser": {"max_capture_megapixels": 1.5, "capture_scale": 0.5}}"##,
++            r##"{"browser": {"max_capture_megapixels": 1.5, "capture_scale": 0.5, "sixel": true}}"##,
+         )
+         .unwrap();
+         // SAFETY: env mutation in tests is serialized by CONFIG_ENV_LOCK.
+@@ -2672,6 +2707,7 @@ mod tests {
+         let config = load();
+         assert_eq!(config.browser.max_capture_megapixels, 1.5);
+         assert_eq!(config.browser.capture_scale, Some(0.5));
++        assert!(config.browser.sixel);
+ 
+         std::fs::write(
+             &path,
+@@ -2696,6 +2732,7 @@ mod tests {
+             Browser::default().max_capture_megapixels
+         );
+         assert_eq!(config.browser.capture_scale, None);
++        assert!(!config.browser.sixel, "sixel omitted from config must fall back to the default");
+     }
+ 
+     #[test]
+diff --git a/cmux-tui/crates/cmux-tui/src/localization.rs b/cmux-tui/crates/cmux-tui/src/localization.rs
+index 6971503394..ae35db34b9 100644
+--- a/cmux-tui/crates/cmux-tui/src/localization.rs
++++ b/cmux-tui/crates/cmux-tui/src/localization.rs
+@@ -23,6 +23,7 @@ pub(crate) struct ForeignViewportMessages {
+ pub(crate) struct SidebarMessages {
+     pub machines: &'static str,
+     pub workspaces: &'static str,
++    pub sessions: &'static str,
+     pub new_vm: &'static str,
+     pub connect_machine: &'static str,
+     pub no_machines: &'static str,
+@@ -147,6 +148,7 @@ static ENGLISH: Catalog = Catalog {
+     sidebar: SidebarMessages {
+         machines: "machines",
+         workspaces: "workspaces",
++        sessions: "sessions",
+         new_vm: "new VM",
+         connect_machine: "connect machine",
+         no_machines: "no machines",
+@@ -227,6 +229,7 @@ static JAPANESE: Catalog = Catalog {
+     sidebar: SidebarMessages {
+         machines: "マシン",
+         workspaces: "ワークスペース",
++        sessions: "セッション",
+         new_vm: "新規 VM",
+         connect_machine: "マシンを接続",
+         no_machines: "マシンがありません",
+diff --git a/cmux-tui/crates/cmux-tui/src/session/mod.rs b/cmux-tui/crates/cmux-tui/src/session/mod.rs
+index 2e5c7c2100..aa65096be8 100644
+--- a/cmux-tui/crates/cmux-tui/src/session/mod.rs
++++ b/cmux-tui/crates/cmux-tui/src/session/mod.rs
+@@ -708,6 +708,46 @@ impl Session {
+         }
+     }
+ 
++    /// Split like [`Session::split`], running `argv` in the new pane instead
++    /// of the default shell. Used by the file sidebar's "open in a new pane"
++    /// command so opening a file doesn't overwrite the focused pane's tab.
++    pub fn split_with_command(
++        &self,
++        pane: PaneId,
++        dir: SplitDir,
++        argv: Vec<String>,
++        cwd: Option<String>,
++        size: Option<(u16, u16)>,
++    ) -> anyhow::Result<SurfaceId> {
++        match self {
++            Session::Local(mux) => {
++                mux.split_with_command(pane, dir, argv, cwd, size).map(|surface| surface.id)
++            }
++            Session::Remote(_) => {
++                anyhow::bail!("opening files in a new pane is not supported over attach yet")
++            }
++        }
++    }
++
++    /// Split like [`Session::split`], opening `url` as a browser tab in the
++    /// new pane instead of a shell.
++    pub fn split_with_browser(
++        &self,
++        pane: PaneId,
++        dir: SplitDir,
++        url: String,
++        size: Option<(u16, u16)>,
++    ) -> anyhow::Result<SurfaceId> {
++        match self {
++            Session::Local(mux) => {
++                mux.split_with_browser(pane, dir, url, size).map(|surface| surface.id)
++            }
++            Session::Remote(_) => {
++                anyhow::bail!("opening files in a new pane is not supported over attach yet")
++            }
++        }
++    }
++
+     pub fn new_pane(&self, pane: PaneId, size: Option<(u16, u16)>) -> anyhow::Result<SurfaceId> {
+         match self {
+             Session::Local(mux) => mux.new_pane(pane, size).map(|surface| surface.id),
+diff --git a/cmux-tui/crates/cmux-tui/src/sidebar_files/files.rs b/cmux-tui/crates/cmux-tui/src/sidebar_files/files.rs
+index afde55646b..6b21d54887 100644
+--- a/cmux-tui/crates/cmux-tui/src/sidebar_files/files.rs
++++ b/cmux-tui/crates/cmux-tui/src/sidebar_files/files.rs
+@@ -66,12 +66,15 @@ fn compare_entries(left: &FileEntry, right: &FileEntry) -> Ordering {
+     })
+ }
+ 
+-pub fn filtered_indices(entries: &[FileEntry], query: &str) -> Vec<usize> {
++/// Indices (into the original, order-preserving sequence `names` was drawn
++/// from) of entries whose name contains `query` case-insensitively. Takes
++/// an iterator rather than `&[FileEntry]` so callers with a tree of rows
++/// (entry + depth) don't need to clone entries just to filter them.
++pub fn filtered_indices<'a>(names: impl Iterator<Item = &'a str>, query: &str) -> Vec<usize> {
+     let query = query.to_lowercase();
+-    entries
+-        .iter()
++    names
+         .enumerate()
+-        .filter_map(|(index, entry)| entry.name.to_lowercase().contains(&query).then_some(index))
++        .filter_map(|(index, name)| name.to_lowercase().contains(&query).then_some(index))
+         .collect()
+ }
+ 
+@@ -139,7 +142,8 @@ mod tests {
+             FileEntry { name: "ReadMe.md".into(), path: "ReadMe.md".into(), kind: EntryKind::File },
+             FileEntry { name: "src".into(), path: "src".into(), kind: EntryKind::Directory },
+         ];
+-        assert_eq!(filtered_indices(&entries, "README"), vec![0]);
+-        assert_eq!(filtered_indices(&entries, "r"), vec![0, 1]);
++        let names = || entries.iter().map(|entry| entry.name.as_str());
++        assert_eq!(filtered_indices(names(), "README"), vec![0]);
++        assert_eq!(filtered_indices(names(), "r"), vec![0, 1]);
+     }
+ }
+diff --git a/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs b/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs
+index 2dc79b472c..d16a804b19 100644
+--- a/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs
++++ b/cmux-tui/crates/cmux-tui/src/sidebar_files/mod.rs
+@@ -1,6 +1,7 @@
+ mod files;
+ mod navigation;
+ 
++use std::collections::HashSet;
+ use std::path::{Path, PathBuf};
+ use std::time::{Duration, Instant};
+ 
+@@ -22,12 +23,32 @@ pub enum FileCommand {
+     Reroot,
+ }
+ 
++/// One row of the flattened file tree: an entry plus its indentation depth
++/// (0 = direct child of the root) and, for directories, whether it is
++/// currently expanded (its children are the rows immediately following it
++/// at `depth + 1`, up to the next row at `depth` or shallower).
++#[derive(Debug, Clone)]
++pub struct TreeRow {
++    pub entry: FileEntry,
++    pub depth: usize,
++    pub expanded: bool,
++}
++
+ pub struct FileBrowser {
+     navigation: Navigation,
+     fallback_cwd: PathBuf,
+-    entries: Vec<FileEntry>,
++    /// Directories the user has expanded, keyed by absolute path. Survives
++    /// filter/hidden-file toggles and refreshes; cleared on reroot or when
++    /// focus-following switches the root.
++    expanded: HashSet<PathBuf>,
++    rows: Vec<TreeRow>,
+     visible: Vec<usize>,
+     selected: usize,
++    /// First visible row's index into `visible`. Persisted across frames so
++    /// that selecting an already-on-screen row (e.g. via mouse click) does
++    /// not force a rescroll; only recomputed when the selection moves
++    /// outside the current viewport.
++    scroll_offset: usize,
+     show_hidden: bool,
+     filter_mode: bool,
+     query: TextInput,
+@@ -41,9 +62,11 @@ impl FileBrowser {
+         let mut browser = Self {
+             navigation: Navigation::new(fallback_cwd.clone()),
+             fallback_cwd,
+-            entries: Vec::new(),
++            expanded: HashSet::new(),
++            rows: Vec::new(),
+             visible: Vec::new(),
+             selected: 0,
++            scroll_offset: 0,
+             show_hidden: false,
+             filter_mode: false,
+             query: TextInput::new(String::new()),
+@@ -67,18 +90,37 @@ impl FileBrowser {
+         self.navigation.is_pinned()
+     }
+ 
+-    pub fn visible_entries(&self) -> impl Iterator<Item = &FileEntry> {
+-        self.visible.iter().map(|index| &self.entries[*index])
++    pub fn visible_rows(&self) -> impl Iterator<Item = &TreeRow> {
++        self.visible.iter().map(|index| &self.rows[*index])
+     }
+ 
+     pub fn total_len(&self) -> usize {
+-        self.entries.len()
++        self.rows.len()
+     }
+ 
+     pub fn selected(&self) -> usize {
+         self.selected
+     }
+ 
++    /// Scrolls just enough to bring the selected row into `[offset, offset +
++    /// visible_height)`, leaving the offset untouched when it's already
++    /// there. Clamped so a shrinking list (collapse, filter, reroot) never
++    /// leaves an out-of-range offset. Returns the resulting offset.
++    pub fn update_scroll(&mut self, visible_height: usize) -> usize {
++        let total = self.visible.len();
++        if visible_height == 0 || total <= visible_height {
++            self.scroll_offset = 0;
++            return 0;
++        }
++        if self.selected < self.scroll_offset {
++            self.scroll_offset = self.selected;
++        } else if self.selected >= self.scroll_offset + visible_height {
++            self.scroll_offset = self.selected + 1 - visible_height;
++        }
++        self.scroll_offset = self.scroll_offset.min(total - visible_height);
++        self.scroll_offset
++    }
++
+     pub fn show_hidden(&self) -> bool {
+         self.show_hidden
+     }
+@@ -116,6 +158,7 @@ impl FileBrowser {
+         if !self.navigation.follow_focused_cwd(directory) {
+             return false;
+         }
++        self.expanded.clear();
+         self.query.clear();
+         self.reload_directory();
+         true
+@@ -123,6 +166,7 @@ impl FileBrowser {
+ 
+     pub fn reroot(&mut self, directory: PathBuf) {
+         self.navigation.reroot(directory);
++        self.expanded.clear();
+         self.query.clear();
+         self.reload_directory();
+     }
+@@ -162,10 +206,10 @@ impl FileBrowser {
+             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                 self.move_selection(1);
+             }
+-            KeyCode::Right => self.descend_selected(),
++            KeyCode::Right => self.expand_selected(),
+             KeyCode::Enter => return self.activate_selected(),
+-            KeyCode::Left => self.go_parent(),
+-            KeyCode::Char('h') if plain => self.go_parent(),
++            KeyCode::Left => self.collapse_selected_or_go_to_parent(),
++            KeyCode::Char('h') if plain => self.collapse_selected_or_go_to_parent(),
+             KeyCode::Char('.') if plain => {
+                 self.show_hidden = !self.show_hidden;
+                 self.reload_directory();
+@@ -183,7 +227,7 @@ impl FileBrowser {
+         if !self.filter_mode || text.is_empty() {
+             return false;
+         }
+-        let keep = self.selected_entry().map(|entry| entry.path);
++        let keep = self.selected_entry_path();
+         let changed = self.query.insert_str(text);
+         if changed {
+             self.apply_filter(keep.as_deref());
+@@ -202,7 +246,7 @@ impl FileBrowser {
+     fn handle_filter_key(&mut self, key: &KeyEvent) -> Option<FileCommand> {
+         match key.code {
+             KeyCode::Esc if !self.query.as_str().is_empty() => {
+-                let keep = self.selected_entry().map(|entry| entry.path);
++                let keep = self.selected_entry_path();
+                 self.query.clear();
+                 self.apply_filter(keep.as_deref());
+             }
+@@ -213,7 +257,7 @@ impl FileBrowser {
+             }
+             KeyCode::Right => {
+                 self.filter_mode = false;
+-                self.descend_selected();
++                self.expand_selected();
+             }
+             KeyCode::Up => self.move_selection(-1),
+             KeyCode::Down => self.move_selection(1),
+@@ -224,7 +268,7 @@ impl FileBrowser {
+                 self.move_selection(1);
+             }
+             _ => {
+-                let keep = self.selected_entry().map(|entry| entry.path);
++                let keep = self.selected_entry_path();
+                 if self.query.handle_key(key) == InputEvent::Changed {
+                     self.apply_filter(keep.as_deref());
+                 }
+@@ -241,84 +285,157 @@ impl FileBrowser {
+         }
+     }
+ 
+-    fn selected_entry(&self) -> Option<FileEntry> {
+-        self.visible.get(self.selected).map(|index| self.entries[*index].clone())
++    fn selected_row(&self) -> Option<&TreeRow> {
++        self.visible.get(self.selected).map(|index| &self.rows[*index])
+     }
+ 
+-    fn descend_selected(&mut self) {
+-        if let Some(entry) = self.selected_entry().filter(FileEntry::is_dir) {
+-            self.navigation.navigate(entry.path);
+-            self.query.clear();
+-            self.reload_directory();
+-        }
++    fn selected_entry_path(&self) -> Option<PathBuf> {
++        self.selected_row().map(|row| row.entry.path.clone())
+     }
+ 
+-    fn go_parent(&mut self) {
+-        if let Some(parent) = self.navigation.current_dir().parent() {
+-            self.navigation.navigate(parent.to_path_buf());
+-            self.query.clear();
+-            self.reload_directory();
++    /// Expand the selected directory in place (no-op for files or
++    /// already-expanded directories).
++    fn expand_selected(&mut self) {
++        let Some(row) = self.selected_row() else { return };
++        if !row.entry.is_dir() || row.expanded {
++            return;
++        }
++        let path = row.entry.path.clone();
++        self.expanded.insert(path.clone());
++        self.navigation.pin();
++        // Clear any active filter: otherwise the children just revealed by
++        // expanding are immediately hidden again by a filter that was only
++        // ever meant to narrow down the parent (e.g. filtering to "docs"
++        // then expanding it shouldn't hide everything inside docs that
++        // doesn't itself match "docs").
++        self.query.clear();
++        self.rebuild_rows();
++        self.apply_filter(Some(&path));
++    }
++
++    /// Collapse the selected directory if it's expanded; otherwise move the
++    /// selection to its parent row. At depth 0 (a root child) with nothing
++    /// expanded, this is a no-op — there's no synthetic root row to select.
++    fn collapse_selected_or_go_to_parent(&mut self) {
++        let Some(row) = self.selected_row() else { return };
++        if row.entry.is_dir() && row.expanded {
++            let path = row.entry.path.clone();
++            self.expanded.remove(&path);
++            self.navigation.pin();
++            self.rebuild_rows();
++            self.apply_filter(Some(&path));
++            return;
++        }
++        let depth = row.depth;
++        if depth == 0 {
++            return;
++        }
++        let Some(current_index) = self.visible.get(self.selected).copied() else { return };
++        // Rows are a depth-first flattening, so the nearest preceding row at
++        // depth - 1 is this row's parent directory.
++        let parent =
++            self.rows[..current_index].iter().rposition(|candidate| candidate.depth == depth - 1);
++        if let Some(parent_index) = parent {
++            let parent_path = self.rows[parent_index].entry.path.clone();
++            self.apply_filter(Some(&parent_path));
+         }
+     }
+ 
+     fn activate_selected(&mut self) -> Option<FileCommand> {
+-        let entry = self.selected_entry()?;
+-        if entry.is_dir() {
+-            self.navigation.navigate(entry.path);
+-            self.query.clear();
+-            self.reload_directory();
++        let row = self.selected_row()?;
++        if row.entry.is_dir() {
++            self.expand_selected();
+             return None;
+         }
+-        Some(FileCommand::OpenEditor(entry.path))
++        Some(FileCommand::OpenEditor(row.entry.path.clone()))
+     }
+ 
+     fn cd_selected(&mut self) -> Option<FileCommand> {
+-        let Some(entry) = self.selected_entry().filter(FileEntry::is_dir) else {
++        let Some(row) = self.selected_row().filter(|row| row.entry.is_dir()) else {
+             self.set_message("select a directory to send cd");
+             return None;
+         };
+-        Some(FileCommand::Cd(entry.path))
++        Some(FileCommand::Cd(row.entry.path.clone()))
+     }
+ 
+     fn browser_selected(&mut self) -> Option<FileCommand> {
+-        let Some(entry) = self.selected_entry().filter(|entry| !entry.is_dir()) else {
++        let Some(row) = self.selected_row().filter(|row| !row.entry.is_dir()) else {
+             self.set_message("select an .html or .md file to open");
+             return None;
+         };
++        let path = row.entry.path.clone();
+         let supported =
+-            entry.path.extension().and_then(|extension| extension.to_str()).is_some_and(
+-                |extension| {
+-                    extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("md")
+-                },
+-            );
++            path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
++                extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("md")
++            });
+         if !supported {
+             self.set_message("only .html and .md files open in a browser");
+             return None;
+         }
+-        Some(FileCommand::OpenBrowser(entry.path))
++        Some(FileCommand::OpenBrowser(path))
+     }
+ 
+     fn reload_directory(&mut self) {
+-        let selected_path = self.selected_entry().map(|entry| entry.path);
+-        match list_directory(self.navigation.current_dir(), self.show_hidden) {
++        let selected_path = self.selected_entry_path();
++        self.rebuild_rows();
++        self.last_refresh = Instant::now();
++        self.apply_filter(selected_path.as_deref());
++    }
++
++    /// Rebuild `rows` from scratch: list the root, then recursively list
++    /// every directory in `expanded`, depth-first, so `rows` is always a
++    /// valid flattened tree for the current expansion state.
++    fn rebuild_rows(&mut self) {
++        self.rows.clear();
++        self.listing_error = None;
++        let root = self.navigation.current_dir().to_path_buf();
++        match list_directory(&root, self.show_hidden) {
+             Ok(entries) => {
+-                self.entries = entries;
+-                self.listing_error = None;
++                for entry in entries {
++                    self.push_row(entry, 0);
++                }
+             }
+             Err(error) => {
+-                self.entries.clear();
+                 self.listing_error = Some(error.to_string());
+             }
+         }
+-        self.last_refresh = Instant::now();
+-        self.apply_filter(selected_path.as_deref());
++    }
++
++    fn push_row(&mut self, entry: FileEntry, depth: usize) {
++        let is_dir = entry.is_dir();
++        let path = entry.path.clone();
++        let expanded = is_dir && self.expanded.contains(&path);
++        self.rows.push(TreeRow { entry, depth, expanded });
++        if !expanded {
++            return;
++        }
++        match list_directory(&path, self.show_hidden) {
++            Ok(children) => {
++                for child in children {
++                    self.push_row(child, depth + 1);
++                }
++            }
++            Err(error) => {
++                // A directory that was expandable a moment ago can fail to
++                // list (permissions changed, it was deleted, ...). Fold it
++                // back to collapsed rather than leaving a half-built subtree.
++                self.expanded.remove(&path);
++                if let Some(row) = self.rows.last_mut() {
++                    row.expanded = false;
++                }
++                self.message = Some(format!("{}: {error}", path.display()));
++            }
++        }
+     }
+ 
+     fn apply_filter(&mut self, selected_path: Option<&Path>) {
+-        self.visible = filtered_indices(&self.entries, self.query.as_str());
++        self.visible = filtered_indices(
++            self.rows.iter().map(|row| row.entry.name.as_str()),
++            self.query.as_str(),
++        );
+         self.selected = selected_path
+             .and_then(|path| {
+-                self.visible.iter().position(|index| self.entries[*index].path == path)
++                self.visible.iter().position(|index| self.rows[*index].entry.path == path)
+             })
+             .unwrap_or_else(|| {
+                 if self.visible.is_empty() { 0 } else { self.selected.min(self.visible.len() - 1) }
+@@ -409,13 +526,13 @@ mod tests {
+         browser.handle_key(&key(KeyCode::Char('/')));
+         browser.handle_key(&key(KeyCode::Char('e')));
+         assert!(browser.filter_mode());
+-        assert_eq!(browser.visible_entries().count(), 1);
+-        assert_eq!(browser.visible_entries().next().unwrap().name, "beta");
++        assert_eq!(browser.visible_rows().count(), 1);
++        assert_eq!(browser.visible_rows().next().unwrap().entry.name, "beta");
+ 
+         browser.handle_key(&key(KeyCode::Esc));
+         assert!(browser.filter_mode());
+         assert_eq!(browser.query(), "");
+-        assert_eq!(browser.visible_entries().nth(browser.selected()).unwrap().name, "beta");
++        assert_eq!(browser.visible_rows().nth(browser.selected()).unwrap().entry.name, "beta");
+ 
+         browser.handle_key(&key(KeyCode::Esc));
+         assert!(!browser.filter_mode());
+@@ -440,28 +557,29 @@ mod tests {
+         let temp = temp_dir("filter-grapheme-backspace");
+         let mut browser = FileBrowser::new(temp.clone());
+         browser.handle_key(&key(KeyCode::Char('/')));
+-        assert!(browser.insert_filter_text("á👨‍👩‍👧‍👦"));
++        assert!(browser.insert_filter_text("á👨‍👩‍👧‍👦"));
+ 
+         browser.handle_key(&key(KeyCode::Backspace));
+ 
+-        assert_eq!(browser.query(), "á");
++        assert_eq!(browser.query(), "á");
+         fs::remove_dir_all(temp).unwrap();
+     }
+ 
+     #[test]
+-    fn enter_and_right_act_on_the_filtered_selection() {
++    fn enter_and_right_expand_directories_in_place_instead_of_replacing_the_root() {
+         let temp = temp_dir("activate");
+         create_dir(temp.join("docs")).unwrap();
+-        write(temp.join("notes.md"), "").unwrap();
++        write(temp.join("docs").join("notes.md"), "").unwrap();
++        write(temp.join("top.md"), "").unwrap();
+         let mut browser = FileBrowser::new(temp.clone());
+ 
+         browser.handle_key(&key(KeyCode::Char('/')));
+-        for ch in "notes".chars() {
++        for ch in "top".chars() {
+             browser.handle_key(&key(KeyCode::Char(ch)));
+         }
+         assert_eq!(
+             browser.handle_key(&key(KeyCode::Enter)),
+-            Some(FileCommand::OpenEditor(temp.join("notes.md")))
++            Some(FileCommand::OpenEditor(temp.join("top.md")))
+         );
+ 
+         let mut browser = FileBrowser::new(temp.clone());
+@@ -470,8 +588,102 @@ mod tests {
+             browser.handle_key(&key(KeyCode::Char(ch)));
+         }
+         browser.handle_key(&key(KeyCode::Right));
+-        assert_eq!(browser.current_dir(), temp.join("docs"));
++        // The root never changes: expanding a directory grows the tree in
++        // place instead of navigating into it. Expanding also clears the
++        // filter that was used to find "docs" in the first place, so
++        // "top.md" (which never matched "docs") reappears alongside it.
++        assert_eq!(browser.current_dir(), temp);
+         assert!(!browser.filter_mode());
++        let rows = browser.visible_rows().collect::<Vec<_>>();
++        assert_eq!(rows.len(), 3);
++        assert_eq!(rows[0].entry.name, "docs");
++        assert!(rows[0].expanded);
++        assert_eq!(rows[0].depth, 0);
++        assert_eq!(rows[1].entry.name, "notes.md");
++        assert_eq!(rows[1].depth, 1);
++        assert_eq!(rows[2].entry.name, "top.md");
++        assert_eq!(rows[2].depth, 0);
++        fs::remove_dir_all(temp).unwrap();
++    }
++
++    #[test]
++    fn left_collapses_expanded_directory_then_moves_to_parent() {
++        let temp = temp_dir("collapse");
++        create_dir(temp.join("docs")).unwrap();
++        write(temp.join("docs").join("notes.md"), "").unwrap();
++        let mut browser = FileBrowser::new(temp.clone());
++        // Select "docs" (index 0: directories sort first) and expand it.
++        browser.select(0);
++        browser.handle_key(&key(KeyCode::Right));
++        assert_eq!(browser.visible_rows().count(), 2);
++
++        // Move onto the child row, then collapse: Left on a file row walks
++        // up to its parent directory row instead of collapsing.
++        browser.select(1);
++        browser.handle_key(&key(KeyCode::Left));
++        assert_eq!(browser.selected(), 0);
++        assert_eq!(browser.visible_rows().nth(0).unwrap().entry.name, "docs");
++
++        // Left again on the now-selected expanded "docs" row collapses it.
++        browser.handle_key(&key(KeyCode::Left));
++        assert_eq!(browser.visible_rows().count(), 1);
++        assert!(!browser.visible_rows().next().unwrap().expanded);
++        fs::remove_dir_all(temp).unwrap();
++    }
++
++    #[test]
++    fn expanding_two_sibling_directories_keeps_both_open() {
++        let temp = temp_dir("multi-expand");
++        create_dir(temp.join("alpha")).unwrap();
++        create_dir(temp.join("beta")).unwrap();
++        write(temp.join("alpha").join("a.txt"), "").unwrap();
++        write(temp.join("beta").join("b.txt"), "").unwrap();
++        let mut browser = FileBrowser::new(temp.clone());
++
++        browser.select(0);
++        browser.handle_key(&key(KeyCode::Right)); // expand alpha
++        // beta is now one row further down since alpha's child was inserted.
++        let beta_index =
++            browser.visible_rows().position(|row| row.entry.name == "beta").unwrap();
++        browser.select(beta_index);
++        browser.handle_key(&key(KeyCode::Right)); // expand beta
++
++        let names = browser.visible_rows().map(|row| row.entry.name.clone()).collect::<Vec<_>>();
++        assert_eq!(names, vec!["alpha", "a.txt", "beta", "b.txt"]);
++        fs::remove_dir_all(temp).unwrap();
++    }
++
++    #[test]
++    fn update_scroll_keeps_offset_when_selection_is_already_visible() {
++        // Regression: clicking a row already on screen used to force a
++        // rescroll that pinned it to the bottom line every time.
++        let temp = temp_dir("scroll");
++        for i in 0..10 {
++            write(temp.join(format!("file{i}")), "").unwrap();
++        }
++        let mut browser = FileBrowser::new(temp.clone());
++        assert_eq!(browser.visible_rows().count(), 10);
++
++        browser.select(0);
++        assert_eq!(browser.update_scroll(3), 0);
++
++        // Moving past the viewport scrolls just enough to reveal it.
++        browser.select(5);
++        assert_eq!(browser.update_scroll(3), 3);
++
++        // Re-selecting a row that's already visible (e.g. a mouse click)
++        // must not rescroll.
++        browser.select(4);
++        assert_eq!(browser.update_scroll(3), 3);
++
++        // Selecting a row above the viewport scrolls up just enough.
++        browser.select(2);
++        assert_eq!(browser.update_scroll(3), 2);
++
++        // The offset never exceeds what's needed to show the last page.
++        browser.select(9);
++        assert_eq!(browser.update_scroll(3), 7);
++
+         fs::remove_dir_all(temp).unwrap();
+     }
+ 
+diff --git a/cmux-tui/crates/cmux-tui/src/sidebar_files/navigation.rs b/cmux-tui/crates/cmux-tui/src/sidebar_files/navigation.rs
+index 5a307da5c2..db1951f4f4 100644
+--- a/cmux-tui/crates/cmux-tui/src/sidebar_files/navigation.rs
++++ b/cmux-tui/crates/cmux-tui/src/sidebar_files/navigation.rs
+@@ -19,11 +19,13 @@ impl Navigation {
+         self.pinned
+     }
+ 
+-    pub fn navigate(&mut self, directory: PathBuf) -> bool {
+-        let changed = self.current_dir != directory;
+-        self.current_dir = directory;
++    /// Mark the current root as manually chosen without changing it, so
++    /// `follow_focused_cwd` stops overriding it. Used when the user expands
++    /// or collapses a tree row: that's a deliberate interaction with the
++    /// current root and shouldn't be undone by focus following the cwd of
++    /// whatever pane the user tabs to next.
++    pub fn pin(&mut self) {
+         self.pinned = true;
+-        changed
+     }
+ 
+     pub fn follow_focused_cwd(&mut self, directory: &Path) -> bool {
+@@ -49,7 +51,7 @@ mod tests {
+     use super::*;
+ 
+     #[test]
+-    fn follows_until_navigation_pins_then_reroot_unpins() {
++    fn follow_stops_once_pinned_then_reroot_resumes_it() {
+         let temp = std::env::temp_dir().join(format!(
+             "cmux-tui-sidebar-navigation-{}-{:?}",
+             std::process::id(),
+@@ -59,19 +61,17 @@ mod tests {
+         fs::create_dir_all(&temp).unwrap();
+         let first = temp.join("first");
+         let second = temp.join("second");
+-        let manual = temp.join("manual");
+         create_dir(&first).unwrap();
+         create_dir(&second).unwrap();
+-        create_dir(&manual).unwrap();
+ 
+         let mut navigation = Navigation::new(first.clone());
+         assert!(navigation.follow_focused_cwd(&second));
+         assert_eq!(navigation.current_dir(), second);
+ 
+-        assert!(navigation.navigate(manual.clone()));
++        navigation.pin();
+         assert!(navigation.is_pinned());
+         assert!(!navigation.follow_focused_cwd(&first));
+-        assert_eq!(navigation.current_dir(), manual);
++        assert_eq!(navigation.current_dir(), second);
+ 
+         assert!(navigation.reroot(first.clone()));
+         assert!(!navigation.is_pinned());
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/graphics.rs b/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
+index 3f6be0d0bb..0b4c865461 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
+@@ -5,6 +5,7 @@ use std::time::Duration;
+ #[cfg(unix)]
+ use std::time::Instant;
+ 
++use base64::Engine;
+ use cmux_tui_core::{Rect, SurfaceId};
+ 
+ const ESC: &str = "\x1b";
+@@ -17,16 +18,38 @@ pub struct GraphicPlacement {
+     pub rect: Rect,
+     pub seq: u64,
+     pub data_b64: String,
++    /// Pixel size of one terminal cell, used to size the Sixel encode to
++    /// the pane's actual pixel budget. Unused by the kitty graphics path
++    /// (kitty scales images to the placement rect itself).
++    pub cell_pixels: (u16, u16),
++}
++
++/// Which in-terminal graphics wire protocol to draw the browser pane with.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum GraphicsProtocol {
++    Kitty,
++    Sixel,
+ }
+ 
+-#[derive(Default)]
+ pub struct GraphicsState {
++    protocol: GraphicsProtocol,
+     transmitted: HashMap<SurfaceId, u64>,
+     visible: HashSet<SurfaceId>,
+ }
+ 
+ impl GraphicsState {
++    pub fn new(protocol: GraphicsProtocol) -> Self {
++        Self { protocol, transmitted: HashMap::new(), visible: HashSet::new() }
++    }
++
+     pub fn frame_batches(&mut self, placements: &[GraphicPlacement]) -> Vec<Vec<u8>> {
++        match self.protocol {
++            GraphicsProtocol::Kitty => self.kitty_frame_batches(placements),
++            GraphicsProtocol::Sixel => self.sixel_frame_batches(placements),
++        }
++    }
++
++    fn kitty_frame_batches(&mut self, placements: &[GraphicPlacement]) -> Vec<Vec<u8>> {
+         let visible_placements = placements
+             .iter()
+             .filter(|placement| placement.rect.width > 0 && placement.rect.height > 0)
+@@ -56,6 +79,51 @@ impl GraphicsState {
+         self.visible = now_visible;
+         out
+     }
++
++    /// Sixel has no placement/id/delete concept like kitty graphics: each
++    /// visible surface is simply redrawn at its rect whenever its frame
++    /// changes. There's no way to erase a stale draw when a surface stops
++    /// being visible (moved/closed/occluded) — the normal cell-based redraw
++    /// of that screen area is relied on to cover it, which is unverified on
++    /// real Windows Terminal and is the main open risk of this path.
++    fn sixel_frame_batches(&mut self, placements: &[GraphicPlacement]) -> Vec<Vec<u8>> {
++        let visible_placements = placements
++            .iter()
++            .filter(|placement| placement.rect.width > 0 && placement.rect.height > 0)
++            .collect::<Vec<_>>();
++        let now_visible = visible_placements.iter().map(|p| p.surface).collect::<HashSet<_>>();
++        let mut out = Vec::new();
++
++        for placement in visible_placements {
++            let already_sent =
++                self.transmitted.get(&placement.surface).is_some_and(|seq| *seq == placement.seq);
++            if already_sent {
++                continue;
++            }
++            let Ok(png_bytes) = base64::engine::general_purpose::STANDARD.decode(&placement.data_b64)
++            else {
++                continue;
++            };
++            let max_width = (placement.rect.width as u32) * (placement.cell_pixels.0.max(1) as u32);
++            let max_height = (placement.rect.height as u32) * (placement.cell_pixels.1.max(1) as u32);
++            let Ok(sixel) = encode_sixel(&png_bytes, max_width, max_height) else { continue };
++            let mut batch = format!("{ESC}7{ESC}[{};{}H", placement.rect.y + 1, placement.rect.x + 1)
++                .into_bytes();
++            batch.extend(sixel);
++            batch.extend(format!("{ESC}8").into_bytes());
++            out.push(batch);
++            self.transmitted.insert(placement.surface, placement.seq);
++        }
++
++        self.visible = now_visible;
++        out
++    }
++}
++
++impl Default for GraphicsState {
++    fn default() -> Self {
++        Self::new(GraphicsProtocol::Kitty)
++    }
+ }
+ 
+ pub fn image_id(surface: SurfaceId) -> u32 {
+@@ -97,6 +165,154 @@ pub fn delete_image(surface: SurfaceId) -> Vec<u8> {
+     format!("{ESC}_Ga=d,d=i,i={id},q=2;{ESC}\\").into_bytes()
+ }
+ 
++/// Decode a PNG (as produced by CDP screenshot frames) and encode it as a
++/// Sixel DCS sequence sized to fit within `max_width`x`max_height` pixels.
++/// Quantizes to a fixed 6x6x6 RGB cube (216 colors, nearest-color, no
++/// dithering) rather than pulling in a palette-quantization dependency —
++/// coarse but enough to make out a page's shapes and colors in a preview.
++pub fn encode_sixel(png_bytes: &[u8], max_width: u32, max_height: u32) -> anyhow::Result<Vec<u8>> {
++    let mut decoder = png::Decoder::new(png_bytes);
++    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
++    let mut reader = decoder.read_info()?;
++    let mut buf = vec![0u8; reader.output_buffer_size()];
++    let frame = reader.next_frame(&mut buf)?;
++    let info = reader.info();
++    let rgb = to_rgb8(&buf[..frame.buffer_size()], info.color_type)?;
++    let (width, height, rgb) = downsample(info.width, info.height, &rgb, max_width, max_height);
++    Ok(sixel_bytes(width, height, &rgb))
++}
++
++/// Flatten a decoded PNG buffer (already normalized to 8-bit samples by
++/// `Transformations::EXPAND | STRIP_16`) to tightly packed RGB8 triples.
++fn to_rgb8(data: &[u8], color_type: png::ColorType) -> anyhow::Result<Vec<u8>> {
++    let mut out = Vec::new();
++    match color_type {
++        png::ColorType::Rgb => out.extend_from_slice(data),
++        png::ColorType::Rgba => {
++            for chunk in data.chunks_exact(4) {
++                out.extend_from_slice(&chunk[..3]);
++            }
++        }
++        png::ColorType::Grayscale => {
++            for &g in data {
++                out.extend_from_slice(&[g, g, g]);
++            }
++        }
++        png::ColorType::GrayscaleAlpha => {
++            for chunk in data.chunks_exact(2) {
++                out.extend_from_slice(&[chunk[0], chunk[0], chunk[0]]);
++            }
++        }
++        png::ColorType::Indexed => {
++            anyhow::bail!("indexed PNG survived EXPAND transformation");
++        }
++    }
++    Ok(out)
++}
++
++/// Nearest-neighbor downsample to fit within `max_width`x`max_height`
++/// (no-op if the image already fits). Simple and fast; Sixel's own pixel
++/// budget is coarse enough that a fancier filter wouldn't be visible.
++fn downsample(
++    width: u32,
++    height: u32,
++    rgb: &[u8],
++    max_width: u32,
++    max_height: u32,
++) -> (u32, u32, Vec<u8>) {
++    let max_width = max_width.max(1);
++    let max_height = max_height.max(1);
++    if width <= max_width && height <= max_height {
++        return (width, height, rgb.to_vec());
++    }
++    let scale = (max_width as f64 / width as f64).min(max_height as f64 / height as f64);
++    let new_width = ((width as f64 * scale).floor() as u32).max(1);
++    let new_height = ((height as f64 * scale).floor() as u32).max(1);
++    let mut out = vec![0u8; (new_width * new_height * 3) as usize];
++    for y in 0..new_height {
++        let src_y = ((y as f64 / scale) as u32).min(height - 1);
++        for x in 0..new_width {
++            let src_x = ((x as f64 / scale) as u32).min(width - 1);
++            let src_idx = ((src_y * width + src_x) * 3) as usize;
++            let dst_idx = ((y * new_width + x) * 3) as usize;
++            out[dst_idx..dst_idx + 3].copy_from_slice(&rgb[src_idx..src_idx + 3]);
++        }
++    }
++    (new_width, new_height, out)
++}
++
++/// Nearest color in a fixed 6x6x6 RGB cube (216 colors, indices 0..216).
++fn quantize(r: u8, g: u8, b: u8) -> u8 {
++    let level = |value: u8| ((value as u32 * 5 + 127) / 255) as u8;
++    level(r) * 36 + level(g) * 6 + level(b)
++}
++
++fn cube_level_to_u8(level: u8) -> u8 {
++    ((level as u32 * 255) / 5) as u8
++}
++
++/// Encode RGB8 pixels as a Sixel DCS sequence (palette definition + 6-row
++/// bands of sixel characters, run-length encoded with `!count`).
++fn sixel_bytes(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
++    let mut out = Vec::new();
++    out.extend_from_slice(b"\x1bPq");
++    out.extend_from_slice(format!("\"1;1;{width};{height}").as_bytes());
++    for index in 0..216u16 {
++        let level = index as u8;
++        let (r, g, b) = (level / 36, (level / 6) % 6, level % 6);
++        let pct = |cube: u8| (cube_level_to_u8(cube) as u32 * 100 / 255) as u8;
++        out.extend_from_slice(
++            format!("#{index};2;{};{};{}", pct(r), pct(g), pct(b)).as_bytes(),
++        );
++    }
++
++    let mut band_start = 0u32;
++    while band_start < height {
++        let band_height = (height - band_start).min(6);
++        let mut color_masks: HashMap<u8, Vec<u8>> = HashMap::new();
++        for x in 0..width {
++            for row in 0..band_height {
++                let y = band_start + row;
++                let idx = ((y * width + x) * 3) as usize;
++                let color = quantize(rgb[idx], rgb[idx + 1], rgb[idx + 2]);
++                let mask = color_masks.entry(color).or_insert_with(|| vec![0u8; width as usize]);
++                mask[x as usize] |= 1 << row;
++            }
++        }
++        let mut colors = color_masks.keys().copied().collect::<Vec<_>>();
++        colors.sort_unstable();
++        for (color_rank, color) in colors.iter().enumerate() {
++            if color_rank > 0 {
++                out.push(b'$');
++            }
++            out.extend_from_slice(format!("#{color}").as_bytes());
++            let masks = &color_masks[color];
++            let mut col = 0;
++            while col < masks.len() {
++                let mask = masks[col];
++                let mut count = 1;
++                while col + count < masks.len() && masks[col + count] == mask {
++                    count += 1;
++                }
++                let ch = 0x3F + mask;
++                if count >= 4 {
++                    out.extend_from_slice(format!("!{count}").as_bytes());
++                    out.push(ch);
++                } else {
++                    for _ in 0..count {
++                        out.push(ch);
++                    }
++                }
++                col += count;
++            }
++        }
++        out.push(b'-');
++        band_start += band_height;
++    }
++    out.extend_from_slice(b"\x1b\\");
++    out
++}
++
+ pub fn probe_kitty_graphics() -> bool {
+     // windows-port: on Windows `read_stdin_for` is a poll(2)-based unix-only
+     // stub that can't drain the reply, so emitting the DA1 query here would
+@@ -256,6 +472,7 @@ mod tests {
+             rect: Rect { x: 4, y: 6, width: 80, height: 24 },
+             seq: 1,
+             data_b64: "frame".to_string(),
++            cell_pixels: (8, 16),
+         };
+         let collapsed =
+             GraphicPlacement { rect: Rect { height: 0, ..visible.rect }, ..visible.clone() };
+@@ -264,4 +481,66 @@ mod tests {
+         assert!(!state.frame_batches(&[visible]).is_empty());
+         assert_eq!(state.frame_batches(&[collapsed]), vec![delete_image(7)]);
+     }
++
++    #[test]
++    fn quantizes_corners_and_primaries_of_the_color_cube() {
++        assert_eq!(quantize(0, 0, 0), 0);
++        assert_eq!(quantize(255, 255, 255), 215);
++        assert_eq!(quantize(255, 0, 0), 180);
++        assert_eq!(quantize(0, 255, 0), 30);
++        assert_eq!(quantize(0, 0, 255), 5);
++    }
++
++    #[test]
++    fn downsample_is_a_no_op_within_budget_and_shrinks_when_over() {
++        let rgb = vec![0u8; (4 * 4 * 3) as usize];
++        let (w, h, out) = downsample(4, 4, &rgb, 10, 10);
++        assert_eq!((w, h), (4, 4));
++        assert_eq!(out.len(), rgb.len());
++
++        let (w, h, out) = downsample(100, 50, &vec![0u8; (100 * 50 * 3) as usize], 20, 20);
++        assert!(w <= 20 && h <= 20, "expected downsample to fit the budget, got {w}x{h}");
++        assert_eq!(out.len(), (w * h * 3) as usize);
++    }
++
++    fn encode_test_png(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
++        let mut buffer = Vec::new();
++        {
++            let mut encoder = png::Encoder::new(&mut buffer, width, height);
++            encoder.set_color(png::ColorType::Rgb);
++            encoder.set_depth(png::BitDepth::Eight);
++            let mut writer = encoder.write_header().unwrap();
++            writer.write_image_data(rgb).unwrap();
++        }
++        buffer
++    }
++
++    #[test]
++    fn encode_sixel_wraps_pixel_data_in_a_dcs_sequence() {
++        #[rustfmt::skip]
++        let rgb = vec![
++            255, 0, 0,    0, 255, 0,
++            0, 0, 255,    255, 255, 0,
++        ];
++        let png_bytes = encode_test_png(2, 2, &rgb);
++
++        let sixel = encode_sixel(&png_bytes, 100, 100).unwrap();
++        let text = String::from_utf8_lossy(&sixel);
++        assert!(text.starts_with("\x1bPq"), "must open with a Sixel DCS: {text}");
++        assert!(text.ends_with("\x1b\\"), "must close the DCS: {text}");
++        assert!(text.contains("\"1;1;2;2"), "must declare the raster size: {text}");
++        // Red quantizes to cube index 180; its palette entry and at least
++        // one reference to it should be present.
++        assert!(text.contains("#180;2;100;0;0"), "missing red palette entry: {text}");
++    }
++
++    #[test]
++    fn encode_sixel_downsamples_to_the_requested_pixel_budget() {
++        let rgb = vec![128u8; (40 * 40 * 3) as usize];
++        let png_bytes = encode_test_png(40, 40, &rgb);
++
++        let sixel = encode_sixel(&png_bytes, 8, 8).unwrap();
++        let text = String::from_utf8_lossy(&sixel);
++        assert!(text.contains("\"1;1;8;8"), "expected an 8x8 raster after downsampling: {text}");
++    }
+ }
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/graphics_writer.rs b/cmux-tui/crates/cmux-tui/src/ui/graphics_writer.rs
+index 7ecb53ac5d..0ef0579ba9 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/graphics_writer.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/graphics_writer.rs
+@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
+ use std::thread::JoinHandle;
+ use std::time::Duration;
+ 
+-use super::graphics::{GraphicPlacement, GraphicsState};
++use super::graphics::{GraphicPlacement, GraphicsProtocol, GraphicsState};
+ 
+ pub struct GraphicsWriter {
+     slot: Arc<Mutex<Option<Vec<GraphicPlacement>>>>,
+@@ -14,13 +14,13 @@ pub struct GraphicsWriter {
+ }
+ 
+ impl GraphicsWriter {
+-    pub fn spawn(stdout_lock: Arc<Mutex<()>>) -> std::io::Result<Self> {
++    pub fn spawn(stdout_lock: Arc<Mutex<()>>, protocol: GraphicsProtocol) -> std::io::Result<Self> {
+         let (tx, rx) = sync_channel(1);
+         let (done_tx, done_rx) = sync_channel(1);
+         let slot = Arc::new(Mutex::new(None));
+         let handle = std::thread::Builder::new().name("mux-graphics-writer".into()).spawn({
+             let slot = slot.clone();
+-            move || writer_loop(slot, rx, stdout_lock, done_tx)
++            move || writer_loop(slot, rx, stdout_lock, done_tx, protocol)
+         })?;
+         Ok(Self { slot, notify: Some(tx), done: Some(done_rx), handle: Some(handle) })
+     }
+@@ -72,9 +72,10 @@ fn writer_loop(
+     rx: Receiver<()>,
+     stdout_lock: Arc<Mutex<()>>,
+     done: SyncSender<()>,
++    protocol: GraphicsProtocol,
+ ) {
+     let _done = DoneOnDrop(done);
+-    let mut graphics = GraphicsState::default();
++    let mut graphics = GraphicsState::new(protocol);
+     while rx.recv().is_ok() {
+         loop {
+             let next = slot.lock().unwrap().take();
+@@ -115,6 +116,7 @@ mod tests {
+                 rect: Rect { x: 0, y: 0, width: 10, height: 5 },
+                 seq: 1,
+                 data_b64: "AAAA".to_string(),
++                cell_pixels: (8, 16),
+             }],
+         );
+         submit_snapshot(
+@@ -125,6 +127,7 @@ mod tests {
+                 rect: Rect { x: 1, y: 1, width: 11, height: 6 },
+                 seq: 2,
+                 data_b64: "BBBB".to_string(),
++                cell_pixels: (8, 16),
+             }],
+         );
+ 
+@@ -136,7 +139,7 @@ mod tests {
+         assert!(rx.try_recv().is_err());
+ 
+         let lock = Arc::new(Mutex::new(()));
+-        let mut writer = GraphicsWriter::spawn(lock).unwrap();
++        let mut writer = GraphicsWriter::spawn(lock, GraphicsProtocol::Kitty).unwrap();
+         writer.shutdown(Duration::from_secs(1));
+         assert!(writer.handle.as_ref().is_none_or(|handle| handle.is_finished()));
+     }
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/mod.rs b/cmux-tui/crates/cmux-tui/src/ui/mod.rs
+index 36d5714a28..02c6dfc3ad 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/mod.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/mod.rs
+@@ -11,7 +11,7 @@ mod overlay;
+ pub(crate) mod pane;
+ mod rail;
+ mod scrollbar;
+-mod sidebar;
++pub(crate) mod sidebar;
+ pub(crate) mod terminal_grid;
+ 
+ use cmux_tui_core::Rect;
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/sidebar.rs b/cmux-tui/crates/cmux-tui/src/ui/sidebar.rs
+index 5f9a932afe..fc3f579bfe 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/sidebar.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/sidebar.rs
+@@ -3,7 +3,7 @@
+ //! (the status bar starts after the sidebar) and rebuilds the click hit map
+ //! as it draws.
+ 
+-use cmux_tui_core::Rect;
++use cmux_tui_core::{PaneId, Rect};
+ use ratatui::Frame;
+ use ratatui::style::{Color, Modifier, Style};
+ 
+@@ -48,9 +48,114 @@ pub fn draw(app: &mut App, frame: &mut Frame) -> Option<(u16, u16)> {
+             draw_workspaces(app, frame);
+             None
+         }
++        SidebarView::Sessions => {
++            draw_sessions(app, frame);
++            None
++        }
+     }
+ }
+ 
++/// One row of the sessions sidebar's flattened pane/tab list. Shared with
++/// `app.rs` so keyboard navigation and mouse clicks walk the exact same
++/// list the renderer drew.
++pub(crate) struct SessionRow {
++    pub pane: PaneId,
++    pub tab_index: usize,
++    pub name: String,
++    pub subtitle: String,
++    pub active: bool,
++}
++
++pub(crate) fn session_rows(app: &App) -> Vec<SessionRow> {
++    let mut rows = Vec::new();
++    for workspace in &app.tree.workspaces {
++        for (screen_index, screen) in workspace.screens.iter().enumerate() {
++            for pane in &screen.panes {
++                for (tab_index, tab) in pane.tabs.iter().enumerate() {
++                    let title = if tab.title.is_empty() { "shell" } else { tab.title.as_str() };
++                    let active = pane.id == screen.active_pane && tab_index == pane.active_tab;
++                    rows.push(SessionRow {
++                        pane: pane.id,
++                        tab_index,
++                        name: title.to_string(),
++                        subtitle: format!(
++                            "{} / {}",
++                            workspace.name,
++                            screen.display_name(screen_index)
++                        ),
++                        active,
++                    });
++                }
++            }
++        }
++    }
++    rows
++}
++
++fn draw_sessions(app: &mut App, frame: &mut Frame) {
++    let Some(area) = app.workspace_sidebar_area(frame.area().height) else { return };
++    let palette = rail::RailPalette::for_app(app, app.workspace_sidebar_focused());
++    let messages = &localization::catalog().sidebar;
++    rail::prepare(frame, area, palette);
++    rail::header(frame, area, messages.sessions, palette);
++
++    let rows = session_rows(app);
++    app.sidebar_session_selection = app.sidebar_session_selection.min(rows.len().saturating_sub(1));
++    let body_rows = rows.len() * rail::ENTRY_STRIDE;
++    let selected_body = app.workspace_sidebar_focused().then(|| {
++        rail::RowSpan::new(app.sidebar_session_selection * rail::ENTRY_STRIDE, rail::ENTRY_HEIGHT)
++    });
++    let mut footer_scroll = 0;
++    let viewport = rail::viewport(
++        area,
++        body_rows,
++        0,
++        &mut app.sidebar_session_scroll,
++        &mut footer_scroll,
++        selected_body,
++        None,
++    );
++
++    let mut hits = Vec::new();
++    if rows.is_empty() {
++        if let Some(y) = viewport.body_y(rail::RowSpan::new(0, 1)) {
++            frame.buffer_mut().set_stringn(
++                area.x,
++                y,
++                " No sessions",
++                area.width.saturating_sub(1) as usize,
++                palette.dim,
++            );
++        }
++    }
++    for (i, row) in rows.iter().enumerate() {
++        let span = rail::RowSpan::new(i * rail::ENTRY_STRIDE, rail::ENTRY_HEIGHT);
++        let Some(y) = viewport.body_y(span) else { continue };
++        let highlighted = app.workspace_sidebar_focused() && i == app.sidebar_session_selection;
++        rail::entry(
++            frame,
++            area,
++            y,
++            rail::Entry {
++                name: &row.name,
++                subtitle: &row.subtitle,
++                highlighted,
++                active: row.active,
++                indicator: None,
++                dimmed: false,
++            },
++            palette,
++        );
++        hits.push((rail::row(area, y), Hit::SessionTab { pane: row.pane, tab_index: row.tab_index }));
++        hits.push((
++            rail::row(area, y + 1),
++            Hit::SessionTab { pane: row.pane, tab_index: row.tab_index },
++        ));
++    }
++    hits.push((rail::divider(area), Hit::RailResize(RailKind::Workspace)));
++    app.hits.extend(hits);
++}
++
+ pub fn draw_machines(app: &mut App, frame: &mut Frame) {
+     let Some(area) = app.machine_sidebar_area(frame.area().height) else { return };
+     let Some(machine_ui) = app.machine_ui.as_ref() else { return };
+@@ -508,8 +613,8 @@ fn draw_files(app: &mut App, frame: &mut Frame) -> Option<(u16, u16)> {
+ 
+     let entries = app
+         .sidebar_files
+-        .visible_entries()
+-        .map(|entry| (entry.name.clone(), entry.is_dir()))
++        .visible_rows()
++        .map(|row| (row.entry.name.clone(), row.entry.is_dir(), row.depth, row.expanded))
+         .collect::<Vec<_>>();
+     let selected = app.sidebar_files.selected();
+     let current_dir = app.sidebar_files.current_dir().to_string_lossy().into_owned();
+@@ -561,8 +666,10 @@ fn draw_files(app: &mut App, frame: &mut Frame) -> Option<(u16, u16)> {
+             buf.set_stringn(area.x, body_start, " No files", content_w, dim);
+         }
+     } else {
+-        let offset = file_scroll_offset(selected, body_height, entries.len());
+-        for (line, (name, is_dir)) in entries.iter().skip(offset).take(body_height).enumerate() {
++        let offset = app.sidebar_files.update_scroll(body_height);
++        for (line, (name, is_dir, depth, expanded)) in
++            entries.iter().skip(offset).take(body_height).enumerate()
++        {
+             let y = body_start + line as u16;
+             let row_index = offset + line;
+             let style = if row_index == selected { selected_style } else { base };
+@@ -571,10 +678,19 @@ fn draw_files(app: &mut App, frame: &mut Frame) -> Option<(u16, u16)> {
+                     buf[(x, y)].set_style(style);
+                 }
+             }
+-            let prefix = if *is_dir { "▸ " } else { "  " };
+-            buf.set_stringn(area.x, y, prefix, content_w, style.add_modifier(Modifier::DIM));
+-            let name_width = content_w.saturating_sub(2);
+-            buf.set_stringn(area.x + 2, y, truncate(name, name_width), name_width, style);
++            // Two columns of indent per tree level, capped so deeply nested
++            // rows still leave room for at least a sliver of the file name.
++            let indent = (depth * 2).min(content_w.saturating_sub(3)) as u16;
++            let marker = if *is_dir { if *expanded { "▾ " } else { "▸ " } } else { "  " };
++            buf.set_stringn(
++                area.x + indent,
++                y,
++                marker,
++                content_w.saturating_sub(indent as usize),
++                style.add_modifier(Modifier::DIM),
++            );
++            let name_width = content_w.saturating_sub(indent as usize + 2);
++            buf.set_stringn(area.x + indent + 2, y, truncate(name, name_width), name_width, style);
+             hits.push((
+                 Rect { x: area.x, y, width: content_width, height: 1 },
+                 Hit::SidebarFile { index: row_index },
+@@ -637,10 +753,3 @@ fn unread_summary(app: &App) -> Option<(usize, Color)> {
+     }
+     highest.map(|(_, color)| (count, color))
+ }
+-
+-fn file_scroll_offset(selected: usize, visible_height: usize, total: usize) -> usize {
+-    if visible_height == 0 || total <= visible_height || selected < visible_height {
+-        return 0;
+-    }
+-    (selected + 1).saturating_sub(visible_height).min(total - visible_height)
+-}
+-- 
+2.53.0.windows.2
+

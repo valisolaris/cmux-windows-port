@@ -142,9 +142,10 @@
     <tr><td>新規ブラウザタブ (new-browser-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+b</kbd></td><td class="dash">—</td></tr>
     <tr><td>次のタブ (next-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Tab</kbd></td><td class="dash">—</td></tr>
     <tr><td>前のタブ (prev-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+Tab</kbd></td><td class="dash">—</td></tr>
-    <tr><td>タブを閉じる (close-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+x</kbd></td><td class="dash">—</td></tr>
+    <tr><td>タブを閉じる (close-tab)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+x</kbd></td><td><kbd>Alt+x</kbd></td></tr>
   </tbody>
 </table>
+<p class="lead">タブが複数あるペインで <kbd>Alt+x</kbd> を押すとそのタブだけを閉じ、最後の1つを閉じるとペインごと畳み込まれます。また、2つのペインのタブはマウスドラッグで1つのタブグループへ統合できます(タブをつまんで別ペインへドロップ)。</p>
 
 <h3>ペイン</h3>
 <table>
@@ -186,6 +187,7 @@
     <tr><td>サイドバーへフォーカス (focus-sidebar)</td><td><kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd></td></tr>
   </tbody>
 </table>
+<p class="lead"><code>toggle-sidebar-view</code> はファイル→ワークスペース→セッションの3方向を循環します。「セッション」ビューは全ワークスペース・全ペインの全タブをフラットな一覧として表示し、選択して <kbd>Enter</kbd> すると画面外にあるタブでも直接フォーカスをジャンプできます。</p>
 
 <h3>スクリーン / ワークスペース</h3>
 <table>
@@ -220,32 +222,37 @@
 
 <!-- ============ 4. コード閲覧 ============ -->
 <h2 id="code" class="section-anchor">4. コード閲覧(sidebar_files → micro)</h2>
-<p>ファイルサイドバー <code>sidebar_files</code> でフォルダをたどり、ファイルを CLI エディタ <strong>micro</strong> で開きます。cmux-tui 内で完結します。</p>
+<p>ファイルサイドバー <code>sidebar_files</code> はエクスプローラー風のツリー表示で、<strong>複数のフォルダを同時に展開</strong>したまま中身をたどれます。ファイルを開くと <strong>既存ペインを上書きせず右に新しいペインが作られ</strong>、そこで CLI エディタ <strong>micro</strong> が起動します。cmux-tui 内で完結します。</p>
 
 <h3>手順</h3>
 <ol class="steps">
   <li>サイドバーを開く: <kbd>Ctrl+B</kbd> → <kbd>s</kbd>(表示されていなければ)。ファイルビューでなければ <kbd>Ctrl+B</kbd> → <kbd>e</kbd> でビュー切替。</li>
   <li>サイドバーにフォーカス: <kbd>Ctrl+B</kbd> → <kbd>Shift+s</kbd>。</li>
-  <li>目的のフォルダ/ファイルへ移動して選択を開く(<kbd>Enter</kbd>)。ファイルなら <code>$EDITOR</code>(=micro)が新規ペインで開きます。</li>
+  <li>フォルダの左の <kbd>▸</kbd> をクリック(または <kbd>→</kbd> キー)で展開。複数のフォルダを同時に展開したままにできる。</li>
+  <li>ファイル行で <kbd>Enter</kbd>(またはダブルクリック)。右に新しいペインが作られ <code>$EDITOR</code>(=micro)がそこで開く。</li>
   <li>micro で編集 → <kbd>Ctrl+S</kbd> で保存 → <kbd>Ctrl+Q</kbd> で閉じる。</li>
 </ol>
 
-<h3>サイドバー内のキー(フォーカスがあるとき・prefix 不要)</h3>
+<h3>サイドバー内のキー・マウス操作(フォーカスがあるとき・prefix 不要)</h3>
 <table>
-  <thead><tr><th>キー</th><th>動作</th></tr></thead>
+  <thead><tr><th>操作</th><th>動作</th></tr></thead>
   <tbody>
-    <tr><td><kbd>↑</kbd> / <kbd>Ctrl+k</kbd></td><td>選択を1つ上へ</td></tr>
-    <tr><td><kbd>↓</kbd> / <kbd>Ctrl+j</kbd></td><td>選択を1つ下へ</td></tr>
-    <tr><td><kbd>→</kbd></td><td>選択中のディレクトリに入る</td></tr>
-    <tr><td><kbd>Enter</kbd></td><td>選択を開く(ディレクトリ=移動、ファイル=<code>$EDITOR</code> で新規ペイン)</td></tr>
-    <tr><td><kbd>←</kbd> / <kbd>h</kbd></td><td>親ディレクトリへ</td></tr>
+    <tr><td><kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>Ctrl+k</kbd> / <kbd>Ctrl+j</kbd> / マウスホイール</td><td>選択を上下に移動</td></tr>
+    <tr><td><kbd>→</kbd> / ディレクトリ行の <kbd>▸</kbd> をクリック</td><td>その場でディレクトリを展開(ツリー表示に差し込まれる)</td></tr>
+    <tr><td><kbd>←</kbd> / <kbd>h</kbd> / 展開済みディレクトリの <kbd>▾</kbd> をクリック</td><td>展開済みなら折りたたみ。そうでなければ親ディレクトリの行へ移動</td></tr>
+    <tr><td><kbd>Enter</kbd> / ファイル行のダブルクリック</td><td>ファイルを <code>$EDITOR</code> で右の新規ペインに開く(ディレクトリなら展開)</td></tr>
     <tr><td><kbd>.</kbd></td><td>隠しファイルの表示トグル</td></tr>
     <tr><td><kbd>/</kbd></td><td>フィルタ(絞り込み)モード開始</td></tr>
-    <tr><td><kbd>~</kbd></td><td>表示ルートを再設定(reroot)</td></tr>
+    <tr><td><kbd>~</kbd></td><td>表示ルートを再設定(reroot。展開状態はリセット)</td></tr>
     <tr><td><kbd>c</kbd></td><td>選択ディレクトリへの <code>cd</code> をフォーカスペインへ送る</td></tr>
-    <tr><td><kbd>o</kbd></td><td>選択した <code>.html</code> / <code>.md</code> をブラウザタブで開く</td></tr>
+    <tr><td><kbd>o</kbd></td><td>選択した <code>.html</code> / <code>.md</code> を右の新規ペインでブラウザタブとして開く(→ 5. HTML プレビュー)</td></tr>
   </tbody>
 </table>
+
+<div class="callout">
+  <p><span class="tag">Enter と o の違い</span></p>
+  <p><kbd>Enter</kbd> は<strong>常にファイルをテキストエディタで開きます</strong>。<code>.html</code> ファイルであってもソースコードがそのまま表示され、レンダリングされたプレビューにはなりません(ファイル内容をアプリ内表示・レンダリングする機能は無い、という元々の設計です)。HTML/MD を見た目どおりにプレビューしたい場合は <kbd>o</kbd> を使ってください。</p>
+</div>
 
 <div class="callout warn">
   <p><span class="tag">! micro が開かない場合</span></p>
@@ -266,9 +273,18 @@
 
 <div class="callout ok">
   <p><span class="tag">✓ TUI 側の「no kitty graphics」表示は正常</span></p>
-  <p>cmux-tui の browser ペイン内には <code>terminal has no kitty graphics support</code> というメッセージが出ますが、これは<strong>仕様どおりの正常動作</strong>です。Windows Terminal は画像描画(kitty graphics protocol)に非対応で、本構成では画像を TUI 内に出さず Chrome の実ウィンドウに表示する方針です。実際のプレビューは Chrome ウィンドウ側で確認してください。</p>
+  <p>既定設定では、cmux-tui の browser ペイン内に <code>terminal has no kitty graphics support</code> というメッセージが出ますが、これは<strong>仕様どおりの正常動作</strong>です。Windows Terminal は kitty graphics protocol に非対応で、既定では画像を TUI 内に出さず Chrome の実ウィンドウに表示する方針です。実際のプレビューは Chrome ウィンドウ側で確認してください。</p>
 </div>
 <p class="lead">ローカルファイルは <code>file:///C:/…</code> 形式の URL で開かれます(Chrome のアドレスバーで確認できます)。</p>
+
+<h3>TUI ペイン内プレビュー(Sixel、opt-in)</h3>
+<p>Windows Terminal stable(1.24系で確認済み)は Sixel グラフィックスに対応しているため、外部 Chrome を開かずに <strong>TUI ペイン内で直接 HTML をプレビュー</strong>することもできます。既定は無効です。</p>
+<pre><code>{
+  "browser": {
+    "sixel": true
+  }
+}</code></pre>
+<p class="lead">上記を <code>cmux-tui.json</code>(「6. 設定」参照)に追加すると、<kbd>o</kbd> で開いた HTML が browser ペイン内に Sixel でレンダリングされます。色は固定 6×6×6 の RGB キューブ(216色、ディザリングなし)に量子化されるため、写真調の画像は多少ぼやけますが、色分け・文字・単色ブロックの判別には十分です。</p>
 <a class="toplink" href="#top">↑ 目次へ</a>
 
 <!-- ============ 6. 設定 ============ -->
@@ -316,7 +332,11 @@
     </tr>
     <tr>
       <td>browser ペインに「no kitty graphics support」と出る</td>
-      <td><strong>正常</strong>です(「5. HTML プレビュー」参照)。プレビューは Chrome の実ウィンドウ側に表示されます。</td>
+      <td><strong>正常</strong>です(「5. HTML プレビュー」参照)。プレビューは Chrome の実ウィンドウ側に表示されます(<code>browser.sixel</code> を有効にしていれば TUI ペイン内にも表示されます)。</td>
+    </tr>
+    <tr>
+      <td><kbd>Enter</kbd> で HTML ファイルを開いてもレンダリングされたプレビューが出ず、ソースコードが表示される</td>
+      <td><strong>正常</strong>です(「4. コード閲覧」の「Enter と o の違い」参照)。<kbd>Enter</kbd> は常にテキストエディタでソースを開きます。見た目どおりのプレビューが欲しいときは <kbd>o</kbd> を使ってください。</td>
     </tr>
     <tr>
       <td>起動直後にプロンプトへ <code>[?61;…c</code> のような文字が漏れる</td>
