@@ -1,0 +1,36 @@
+From 7f46d1e7fb6d5ea5c7d3e7e3b05e35c8701fcacf Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sat, 8 Aug 2026 18:45:17 +0900
+Subject: [PATCH 11/11] windows-port: don't let a paste-burst's own key
+ releases end the burst
+
+Fixes the fragmentation the previous commit's test reproduces:
+classify_burst_event() now treats a KeyEventKind::Release as ignorable
+input to keep waiting for the next key on, rather than as the event
+that ends the burst. handle_key() already no-ops on Release for the
+same reason (every keystroke, typed or pasted, arrives as a Press
+followed by a Release on Windows), so nothing downstream needed to
+change.
+
+Real-machine verified: pasting multi-line clipboard text (including
+via Claude Code's own /copy) into a shell running inside a cmux-tui
+pane no longer submits partway through on an embedded newline.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index 39d10c2702..9112f4a4e2 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -2090,6 +2090,7 @@ enum BurstEvent {
+ fn classify_burst_event(event: Event) -> BurstEvent {
+     match event {
+         Event::Key(key) if pasteable_char(&key).is_some() => BurstEvent::Push(key),
++        Event::Key(key) if key.kind == KeyEventKind::Release => BurstEvent::Ignore,
+         other => BurstEvent::End(Some(other)),
+     }
+ }
+-- 
+2.53.0.windows.2
+

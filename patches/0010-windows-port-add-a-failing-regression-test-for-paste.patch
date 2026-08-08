@@ -1,0 +1,192 @@
+From ab6bf21f0129e9e495b5f461f78f2ed441ad3752 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sat, 8 Aug 2026 18:42:38 +0900
+Subject: [PATCH 10/11] windows-port: add a failing regression test for
+ paste-burst fragmentation
+
+crossterm's Windows event source emits a matching KeyEventKind::Release
+for every Press, including for clipboard-injected paste characters.
+read_input_batch's paste-burst coalescing didn't know about this: the
+release right after the very first pasted character ended the burst
+after one key, so a paste never coalesced into a single Event::Paste
+and an embedded Enter reached the shell as a literal, premature submit.
+
+This commit only extracts the burst-continuation decision into a pure
+classify_burst_event() function (no behavior change) and adds tests,
+including one that reproduces the fragmentation with a synthetic
+Press/Release-interleaved event stream. It fails as expected; the fix
+follows in the next commit.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs | 128 +++++++++++++++++++++++++---
+ 1 file changed, 117 insertions(+), 11 deletions(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index fea3e88dff..39d10c2702 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -2065,11 +2065,40 @@ fn pasteable_char(key: &KeyEvent) -> Option<char> {
+     }
+ }
+ 
++/// What a single event, seen while a paste burst is in progress, means for
++/// that burst. Split out from `read_input_batch` so the decision is a pure
++/// function tests can drive directly.
++#[derive(Debug, PartialEq)]
++enum BurstEvent {
++    /// A pasteable key: fold it into the burst and keep reading.
++    Push(KeyEvent),
++    /// windows-port: crossterm's Windows source emits a matching
++    /// `KeyEventKind::Release` for every `Press` — real keystrokes and
++    /// clipboard-injected paste characters alike (`handle_key` already
++    /// no-ops on `Release`, see there). Ignoring it here, instead of ending
++    /// the burst, is what lets consecutive pasted characters keep
++    /// coalescing: without this arm, the release right after the very
++    /// first pasted character ended the burst after one key, so
++    /// paste-burst coalescing never engaged and an embedded Enter mid-paste
++    /// hit the shell as a literal, premature submit.
++    Ignore,
++    /// Anything else ends the burst; carries the event along as trailing
++    /// input if there was one.
++    End(Option<Event>),
++}
++
++fn classify_burst_event(event: Event) -> BurstEvent {
++    match event {
++        Event::Key(key) if pasteable_char(&key).is_some() => BurstEvent::Push(key),
++        other => BurstEvent::End(Some(other)),
++    }
++}
++
+ /// Reads one crossterm event, then — if it's a pasteable key — keeps
+-/// reading with a short timeout for as long as pasteable keys keep arriving
+-/// within `PASTE_BURST_GAP` of each other. A burst of 2+ keys collapses to
+-/// a single `Event::Paste`; a lone key (normal typing) is returned as the
+-/// `Event::Key` crossterm gave it, unchanged.
++/// reading with a short timeout for as long as pasteable keys (and their
++/// releases) keep arriving within `PASTE_BURST_GAP` of each other. A burst
++/// of 2+ keys collapses to a single `Event::Paste`; a lone key (normal
++/// typing) is returned as the `Event::Key` crossterm gave it, unchanged.
+ fn read_input_batch() -> std::io::Result<Vec<Event>> {
+     let first = crossterm::event::read()?;
+     let Event::Key(first_key) = first else {
+@@ -2083,9 +2112,10 @@ fn read_input_batch() -> std::io::Result<Vec<Event>> {
+         if !crossterm::event::poll(PASTE_BURST_GAP)? {
+             return Ok(finish_paste_burst(burst, None));
+         }
+-        match crossterm::event::read()? {
+-            Event::Key(key) if pasteable_char(&key).is_some() => burst.push(key),
+-            other => return Ok(finish_paste_burst(burst, Some(other))),
++        match classify_burst_event(crossterm::event::read()?) {
++            BurstEvent::Push(key) => burst.push(key),
++            BurstEvent::Ignore => continue,
++            BurstEvent::End(trailing) => return Ok(finish_paste_burst(burst, trailing)),
+         }
+     }
+ }
+@@ -10627,16 +10657,18 @@ fn browser_key_mapping(
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        App, AppEvent, BACKGROUND_REFRESH_RETRIES, ContextMenu, DeferredInput, Drag, FocusTarget,
++        App, AppEvent, BACKGROUND_REFRESH_RETRIES, BurstEvent, ContextMenu, DeferredInput, Drag,
++        FocusTarget,
+         ForwardMuxOutcome, Hit, MachineActionWorker, MenuAction, MenuItem, MuxTitleIngress,
+         OrderedSession, PaneArea, PaneFocusHistory, PendingSessionMutation,
+         PendingSessionMutationState, PromptTarget, PtyFailureIngress, PtyMousePressResult,
+         RailKind, RenderAction, Selection, SessionCompletion, SessionCompletionAction,
+         SessionEventSender, SidebarLayout, SidebarPluginSyncClaim, SidebarPluginSyncState,
+         SurfaceResizeDecision, SurfaceResizeOwnership, WorkspaceRailSelection,
+-        browser_content_size_for_rect, browser_hover_forward_allowed, client_menu_item,
+-        finish_paste_burst, forward_mux_event, forward_mux_events, pane_context_menu_groups,
+-        pane_parts_for_rect, pasteable_char, prepare_ordered_session, preserve_client_view,
++        browser_content_size_for_rect, browser_hover_forward_allowed, classify_burst_event,
++        client_menu_item, finish_paste_burst, forward_mux_event, forward_mux_events,
++        pane_context_menu_groups, pane_parts_for_rect, pasteable_char, prepare_ordered_session,
++        preserve_client_view,
+         rail_drag_width, record_surface_resize_dispatch_result,
+         sidebar_plugin_status_settles_passive_claim, start_ordered_session,
+     };
+@@ -10743,6 +10775,80 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn classify_burst_event_pushes_pasteable_keys() {
++        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
++        assert_eq!(classify_burst_event(Event::Key(key)), BurstEvent::Push(key));
++    }
++
++    #[test]
++    fn classify_burst_event_ignores_key_release_windows_port() {
++        let mut release = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
++        release.kind = crossterm::event::KeyEventKind::Release;
++        assert_eq!(classify_burst_event(Event::Key(release)), BurstEvent::Ignore);
++    }
++
++    #[test]
++    fn classify_burst_event_ends_burst_on_non_pasteable_key() {
++        let arrow = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
++        assert_eq!(
++            classify_burst_event(Event::Key(arrow)),
++            BurstEvent::End(Some(Event::Key(arrow)))
++        );
++    }
++
++    /// windows-port regression test: simulates the Press/Release-interleaved
++    /// event stream crossterm's Windows source produces for a clipboard
++    /// paste (see `BurstEvent::Ignore`'s doc comment). Before that arm
++    /// existed, the release right after the first pasted character ended
++    /// the burst after just one key, so a paste never coalesced into a
++    /// single `Event::Paste` and an embedded Enter would have reached the
++    /// shell as a literal, premature submit.
++    #[test]
++    fn windows_paste_burst_survives_interleaved_key_releases() {
++        fn press(code: KeyCode) -> KeyEvent {
++            KeyEvent::new(code, KeyModifiers::NONE)
++        }
++        fn release(code: KeyCode) -> KeyEvent {
++            let mut key = press(code);
++            key.kind = crossterm::event::KeyEventKind::Release;
++            key
++        }
++
++        let stream = [
++            press(KeyCode::Char('a')),
++            release(KeyCode::Char('a')),
++            press(KeyCode::Char('b')),
++            release(KeyCode::Char('b')),
++            press(KeyCode::Char('c')),
++            release(KeyCode::Char('c')),
++            press(KeyCode::Enter),
++            release(KeyCode::Enter),
++        ];
++
++        // Mirrors read_input_batch's own loop: the first event starts the
++        // burst unconditionally, then every later event is folded through
++        // classify_burst_event exactly as read_input_batch does.
++        let mut events = stream.into_iter();
++        let mut burst = vec![events.next().unwrap()];
++        let mut trailing = None;
++        for event in events {
++            match classify_burst_event(Event::Key(event)) {
++                BurstEvent::Push(key) => burst.push(key),
++                BurstEvent::Ignore => continue,
++                BurstEvent::End(t) => {
++                    trailing = t;
++                    break;
++                }
++            }
++        }
++
++        assert_eq!(
++            finish_paste_burst(burst, trailing),
++            vec![Event::Paste("abc\n".to_string())]
++        );
++    }
++
+     #[test]
+     fn pane_context_menu_groups_current_tab_creation_layout_and_ids() {
+         let pane = 7;
+-- 
+2.53.0.windows.2
+

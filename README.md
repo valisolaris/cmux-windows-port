@@ -23,11 +23,12 @@ Rust 製 TUI マルチプレクサ **`cmux-tui`** を **Windows 11 でネイテ�
 
 ## このリポジトリの中身
 
-本体は同梱せず、upstream の特定コミットに当てる **9つのパッチ**で Windows 対応を行います
+本体は同梱せず、upstream の特定コミットに当てる **11個のパッチ**で Windows 対応を行います
 (いずれも Unix 側の挙動は変えません)。`0001`〜`0003` は Phase 2/3(要望①②③の基本実装)、
 `0004`〜`0005` は Phase 4(実機での利用を通じて追加した UX 改善ラウンド)、`0006` は Phase 5
-(起動時ディレクトリ指定)、`0007`〜`0009` は Phase 6(タブバーのUX改善+バグ修正)です。詳細な
-変更点は[更新履歴](#更新履歴)を参照してください。
+(起動時ディレクトリ指定)、`0007`〜`0009` は Phase 6(タブバーのUX改善+バグ修正)、`0010`〜
+`0011` は Phase 7(貼り付け途中送信バグの修正)です。詳細な変更点は
+[更新履歴](#更新履歴)を参照してください。
 
 | パッチ | 対象ファイル | 内容 |
 |---|---|---|
@@ -40,6 +41,8 @@ Rust 製 TUI マルチプレクサ **`cmux-tui`** を **Windows 11 でネイテ�
 | `0007` | `app.rs`/`config.rs`/`ui/pane.rs` | タブがペイン幅に入りきらないとき、タブバーを動的に2段化(設定 `tabs.max_rows`、既定2) |
 | `0008` | `mux.rs`/`session/mod.rs`/`app.rs`/`ui/pane.rs`/`config.rs` | sidebar_files から開いたエディタタブにファイル名を表示、ラベル文字数上限を設定 `tabs.max_width` 化(既定24) |
 | `0009` | `app.rs`/`config.rs` | `0007` のバグ修正: 2段化したタブバーで新規タブ/split作成時に content 高さが1行ズレる不整合を修正、`tabs.max_width` を4〜200にclamp(codexの第三者レビューで検出) |
+| `0010` | `app.rs` | (動作変更なし)貼り付け途中送信バグの回帰テストを追加。Windows の crossterm は1キーごとに Press/Release の2イベントを出すため、貼り付け中の最初の文字の Release でバーストが打ち切られ、貼り付けが分断されることをユニットテストで再現(red) |
+| `0011` | `app.rs` | `0010` の回帰テストを green にする本修正。バースト継続判定で `KeyEventKind::Release` を無視するようにし、貼り付け中の改行が生の Enter としてシェルに届いて途中送信される不具合を解消(実機確認済み) |
 
 ## パッチを当ててビルドする
 
@@ -71,8 +74,10 @@ git am /path/to/cmux-windows-port/patches/0001-*.patch `
        /path/to/cmux-windows-port/patches/0006-*.patch `
        /path/to/cmux-windows-port/patches/0007-*.patch `
        /path/to/cmux-windows-port/patches/0008-*.patch `
-       /path/to/cmux-windows-port/patches/0009-*.patch
-#   コミット履歴が不要なら:  git apply /path/to/.../patches/000*.patch
+       /path/to/cmux-windows-port/patches/0009-*.patch `
+       /path/to/cmux-windows-port/patches/0010-*.patch `
+       /path/to/cmux-windows-port/patches/0011-*.patch
+#   コミット履歴が不要なら:  git apply /path/to/.../patches/00*.patch
 
 # 3) ビルド用の環境変数(この呼び出し内でのみ設定)
 $llvm = "$env:USERPROFILE\tools\clang+llvm-20.1.8-x86_64-pc-windows-msvc"   # 実際の LLVM 展開先に合わせる
@@ -164,7 +169,9 @@ cmux-windows-port/
 │  ├─ 0006-*.patch      ← 起動時 --cwd/位置引数で開始ディレクトリ指定
 │  ├─ 0007-*.patch      ← タブバー2段化(tabs.max_rows)
 │  ├─ 0008-*.patch      ← エディタタブのファイル名表示(tabs.max_width)
-│  └─ 0009-*.patch      ← 0007のバグ修正(2段タブバーの content 高さ不整合・max_widthのclamp)
+│  ├─ 0009-*.patch      ← 0007のバグ修正(2段タブバーの content 高さ不整合・max_widthのclamp)
+│  ├─ 0010-*.patch      ← 貼り付け途中送信バグの回帰テスト追加(red)
+│  └─ 0011-*.patch      ← 0010を green にする本修正(Windows版crosstermのKey Release取りこぼし対応)
 ├─ docs/
 │  ├─ manual.html       ← 利用マニュアル(単一 HTML・目次アンカー遷移)
 │  └─ keybindings.md    ← 既定キーバインド一覧(コードから抽出)
@@ -183,6 +190,27 @@ cmux-windows-port/
 > `bin/` に配置してください。
 
 ## 更新履歴
+
+### Phase 7 — 貼り付け途中送信バグの修正(2026-08-08、パッチ `0010`・`0011`)
+
+Phase 4(`0004`)で「貼り付け中の改行のたびに途中送信される」問題への対策として `read_input_batch`
+のバースト束ね機構を実装していたが、**実機での検証が行われないまま公開しており、実際には機能して
+いなかった**。今回、cmux ペイン内で動くシェル(Claude Code の入力欄含む)へ複数行テキストを貼り付
+けると、途中で切れてそのまま送信される不具合の再現報告を受けて調査・修正した。
+
+- **原因**: Windows の crossterm イベント源は、1回のキー入力(実キー・クリップボード注入文字の
+  いずれも)に対して `Press` と `Release` の2つのイベントを発行する。`read_input_batch` のバースト
+  判定は `Press` 以外を「バーストの終端」とみなしていたため、貼り付け中の最初の1文字の直後に届く
+  `Release` で即座にバーストが打ち切られていた。結果として貼り付けは1文字ごとに分断され、埋め込まれた
+  改行(Enter)がそのままシェルへの「送信」として解釈されていた。
+- **修正(`0011`)**: バースト継続判定を `classify_burst_event` という純粋関数に切り出し、`Release`
+  イベントはバーストを終わらせず無視して次のキーを待つように変更(`handle_key` 側は元々 `Release` を
+  無視する設計だったため、下流の挙動は変わらない)。
+- **回帰テスト(`0010`→`0011`)**: Press/Release が交互に並ぶ実際のイベント列を模したユニットテストを
+  追加。修正前の状態でこのテストが実際に失敗する(red)ことを確認した上で、修正を別コミットとして追加し
+  green にした(`0010`/`0011` の2パッチ構成はこの red→green を保存するため)。
+- **実機確認済み**: cmux ペイン内のシェル(Claude Code の `/copy` 経由を含む)へ改行を含む複数行テキストを
+  貼り付け、最後まで途切れず入力され途中送信されないことを確認。
 
 ### Phase 6 — タブバーUX改善+バグ修正(2026-07-26、パッチ `0007`・`0008`・`0009`)
 
@@ -227,8 +255,11 @@ Phase 2/3 公開後、実機での利用を通じて次の改善を実装。全�
   tmux 互換挙動・`focus-sidebar` のトグル仕様・日本語 IME が影響することが判明。
   [`docs/keybindings.md`](docs/keybindings.md) に注記済み。
 - そのほか: `Alt+X` でペイン/タブを閉じる、サイドバーに全ペイン×全タブのタイトル一覧を集約表示、
-  `/copy` 貼り付け時に改行のたびに途中送信されていた問題の修正、ファイルサイドバーのマウスホイール
-  スクロール対応。
+  貼り付け時に改行のたびに途中送信される問題への対策(`read_input_batch` のバースト束ね)、
+  ファイルサイドバーのマウスホイールスクロール対応。
+  > **訂正(Phase 7)**: この貼り付け対策は当時実機での検証が行われないまま公開しており、
+  > 実際には Windows 版 crossterm 特有の挙動(1キーごとの Press/Release）を考慮しておらず
+  > 機能していなかった。詳細と修正は後述の Phase 7([更新履歴](#更新履歴))を参照。
 
 詳細な調査・実装経緯は [`spec/handoff-phase4.md`](spec/handoff-phase4.md) を参照。
 
