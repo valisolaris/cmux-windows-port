@@ -1,0 +1,57 @@
+From 0d0a550f31787de7c9810a2903000dd0957ba24b Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sat, 8 Aug 2026 19:23:22 +0900
+Subject: [PATCH] windows-port: cover Repeat/Mouse/Resize/Focus in
+ classify_burst_event tests
+
+codex's independent review of the paste-burst fix noted that, while
+Repeat/Mouse/Resize/Focus were already handled correctly by the
+existing End(Some(other)) catch-all, nothing exercised them directly.
+Add that coverage; no behavior change.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index 9112f4a4e2..b9b40796a8 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -10798,6 +10798,35 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn classify_burst_event_ends_burst_on_repeat_key() {
++        let mut repeat = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
++        repeat.kind = crossterm::event::KeyEventKind::Repeat;
++        assert_eq!(
++            classify_burst_event(Event::Key(repeat)),
++            BurstEvent::End(Some(Event::Key(repeat)))
++        );
++    }
++
++    #[test]
++    fn classify_burst_event_ends_burst_on_non_key_events_unchanged() {
++        let mouse = Event::Mouse(MouseEvent {
++            kind: MouseEventKind::Moved,
++            column: 1,
++            row: 1,
++            modifiers: KeyModifiers::NONE,
++        });
++        assert_eq!(classify_burst_event(mouse.clone()), BurstEvent::End(Some(mouse)));
++
++        let resize = Event::Resize(80, 24);
++        assert_eq!(classify_burst_event(resize.clone()), BurstEvent::End(Some(resize)));
++
++        assert_eq!(
++            classify_burst_event(Event::FocusGained),
++            BurstEvent::End(Some(Event::FocusGained))
++        );
++    }
++
+     /// windows-port regression test: simulates the Press/Release-interleaved
+     /// event stream crossterm's Windows source produces for a clipboard
+     /// paste (see `BurstEvent::Ignore`'s doc comment). Before that arm
+-- 
+2.53.0.windows.2
+
