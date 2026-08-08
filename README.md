@@ -82,7 +82,10 @@ git am /path/to/cmux-windows-port/patches/0001-*.patch `
        /path/to/cmux-windows-port/patches/0009-*.patch `
        /path/to/cmux-windows-port/patches/0010-*.patch `
        /path/to/cmux-windows-port/patches/0011-*.patch `
-       /path/to/cmux-windows-port/patches/0012-*.patch
+       /path/to/cmux-windows-port/patches/0012-*.patch `
+       /path/to/cmux-windows-port/patches/0013-*.patch `
+       /path/to/cmux-windows-port/patches/0014-*.patch `
+       /path/to/cmux-windows-port/patches/0015-*.patch
 #   コミット履歴が不要なら:  git apply /path/to/.../patches/00*.patch
 
 # 3) ビルド用の環境変数(この呼び出し内でのみ設定)
@@ -178,7 +181,10 @@ cmux-windows-port/
 │  ├─ 0009-*.patch      ← 0007のバグ修正(2段タブバーの content 高さ不整合・max_widthのclamp)
 │  ├─ 0010-*.patch      ← 貼り付け途中送信バグの回帰テスト追加(red)
 │  ├─ 0011-*.patch      ← 0010を green にする本修正(Windows版crosstermのKey Release取りこぼし対応)
-│  └─ 0012-*.patch      ← 第三者レビュー(Fable/codex)を受けたテスト補強(動作変更なし)
+│  ├─ 0012-*.patch      ← 第三者レビュー(Fable/codex)を受けたテスト補強(動作変更なし)
+│  ├─ 0013-*.patch      ← サイドバー幅パニックの回帰テスト追加(red)
+│  ├─ 0014-*.patch      ← 0013を green にする本修正(clamp_rail_widthのパニック解消)
+│  └─ 0015-*.patch      ← Sixelプレビューのセルピクセルサイズ実測(CSI 16 t)
 ├─ docs/
 │  ├─ manual.html       ← 利用マニュアル(単一 HTML・目次アンカー遷移)
 │  └─ keybindings.md    ← 既定キーバインド一覧(コードから抽出)
