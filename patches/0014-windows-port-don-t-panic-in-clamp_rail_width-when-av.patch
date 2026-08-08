@@ -1,0 +1,40 @@
+From daea56962603dd3cea8514b46c56ce2164aa7096 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sat, 8 Aug 2026 20:23:38 +0900
+Subject: [PATCH 14/14] windows-port: don't panic in clamp_rail_width when
+ available is below minimum
+
+then_some(value) evaluates value eagerly regardless of the receiver,
+so desired.clamp(MIN_RAIL_WIDTH, effective_max) ran even when
+effective_max < MIN_RAIL_WIDTH, violating clamp's min <= max
+precondition. Switch to then(|| ...) so the clamp only runs once the
+range check has passed, matching the documented None-on-too-narrow
+behavior.
+
+This is an upstream bug (introduced in 4dca8287c9, unrelated to the
+Windows port), surfaced by nesting cmux-tui inside an existing cmux
+pane and hitting a narrow terminal width.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index 8a69f91fc6..e841f137c5 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -3197,7 +3197,11 @@ const MIN_CONTENT_WIDTH: u16 = 40;
+ fn clamp_rail_width(desired: u16, configured_max: u16, available: u16) -> Option<u16> {
+     let configured_max = if configured_max > 0 { configured_max } else { u16::MAX };
+     let effective_max = available.min(configured_max);
+-    (effective_max >= MIN_RAIL_WIDTH).then_some(desired.clamp(MIN_RAIL_WIDTH, effective_max))
++    // `then_some` eagerly evaluates its argument even when the receiver is
++    // false, so `desired.clamp(MIN_RAIL_WIDTH, effective_max)` used to run
++    // (and panic on min > max) whenever effective_max < MIN_RAIL_WIDTH.
++    // `then` with a closure defers evaluation until the check passes.
++    (effective_max >= MIN_RAIL_WIDTH).then(|| desired.clamp(MIN_RAIL_WIDTH, effective_max))
+ }
+ 
+ fn sidebar_layout_for(
+-- 
+2.53.0.windows.2
+

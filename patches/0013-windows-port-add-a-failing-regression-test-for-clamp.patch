@@ -1,0 +1,61 @@
+From d92de8a09f9ff08e44543eaec4b4a2c177c7da92 Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sat, 8 Aug 2026 20:19:59 +0900
+Subject: [PATCH 13/14] windows-port: add a failing regression test for
+ clamp_rail_width panic
+
+Nesting cmux-tui inside an existing cmux pane (e.g. launching an
+isolated verification session from a live workspace) can report a
+terminal width where available (width - MIN_CONTENT_WIDTH) drops
+below MIN_RAIL_WIDTH. clamp_rail_width is documented to return None
+in that case, but real-machine testing hit a panic instead:
+thread 'main' panicked at app.rs:3200: min > max. min = 10, max = 5
+
+Adds a regression test reproducing the panic; the fix follows in the
+next commit.
+---
+ cmux-tui/crates/cmux-tui/src/app.rs | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/app.rs b/cmux-tui/crates/cmux-tui/src/app.rs
+index b9b40796a8..8a69f91fc6 100644
+--- a/cmux-tui/crates/cmux-tui/src/app.rs
++++ b/cmux-tui/crates/cmux-tui/src/app.rs
+@@ -10666,8 +10666,9 @@ mod tests {
+         RailKind, RenderAction, Selection, SessionCompletion, SessionCompletionAction,
+         SessionEventSender, SidebarLayout, SidebarPluginSyncClaim, SidebarPluginSyncState,
+         SurfaceResizeDecision, SurfaceResizeOwnership, WorkspaceRailSelection,
+-        browser_content_size_for_rect, browser_hover_forward_allowed, classify_burst_event,
+-        client_menu_item, finish_paste_burst, forward_mux_event, forward_mux_events,
++        browser_content_size_for_rect, browser_hover_forward_allowed, clamp_rail_width,
++        classify_burst_event, client_menu_item, finish_paste_burst, forward_mux_event,
++        forward_mux_events,
+         pane_context_menu_groups, pane_parts_for_rect, pasteable_char, prepare_ordered_session,
+         preserve_client_view,
+         rail_drag_width, record_surface_resize_dispatch_result,
+@@ -15947,6 +15948,22 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn clamp_rail_width_returns_none_instead_of_panicking_when_available_is_below_minimum() {
++        // Real-machine repro: launching cmux-tui nested inside an existing
++        // cmux pane can report a terminal width where
++        // `width - MIN_CONTENT_WIDTH` (and thus `available` here) is below
++        // MIN_RAIL_WIDTH. `clamp_rail_width` is supposed to return `None` in
++        // that case, but `desired.clamp(MIN_RAIL_WIDTH, effective_max)` was
++        // being evaluated unconditionally (eager `then_some` argument)
++        // before the range check ran, panicking with "min > max".
++        assert_eq!(clamp_rail_width(20, 0, 5), None);
++        assert_eq!(clamp_rail_width(20, 0, 0), None);
++        // Sanity check the normal (non-panicking) path still clamps.
++        assert_eq!(clamp_rail_width(5, 0, 30), Some(10));
++        assert_eq!(clamp_rail_width(50, 0, 30), Some(30));
++    }
++
+     #[test]
+     fn mouse_wheel_scrolls_machine_and_workspace_rail_viewports_independently() {
+         let mux = Mux::new("rail-wheel-test", SurfaceOptions::default());
+-- 
+2.53.0.windows.2
+
