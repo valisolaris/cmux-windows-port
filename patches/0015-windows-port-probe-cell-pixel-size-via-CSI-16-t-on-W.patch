@@ -1,0 +1,161 @@
+From 12981b5c37e92d4e5f8ccdd96e28060dac13959b Mon Sep 17 00:00:00 2001
+From: valisolaris <valisolaris@gmail.com>
+Date: Sat, 8 Aug 2026 22:03:10 +0900
+Subject: [PATCH] windows-port: probe cell pixel size via CSI 16 t on Windows
+ (Sixel previously used a hardcoded 8x16 default)
+
+---
+ cmux-tui/crates/cmux-tui/src/ui/graphics.rs | 109 +++++++++++++++++---
+ 1 file changed, 96 insertions(+), 13 deletions(-)
+
+diff --git a/cmux-tui/crates/cmux-tui/src/ui/graphics.rs b/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
+index 0b4c865461..47f0211303 100644
+--- a/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
++++ b/cmux-tui/crates/cmux-tui/src/ui/graphics.rs
+@@ -1,12 +1,11 @@
+ use std::collections::{HashMap, HashSet};
+-#[cfg(unix)]
+ use std::io::Write;
+-use std::time::Duration;
+-#[cfg(unix)]
+-use std::time::Instant;
++use std::time::{Duration, Instant};
+ 
+ use base64::Engine;
+ use cmux_tui_core::{Rect, SurfaceId};
++#[cfg(windows)]
++use crossterm::event::{Event, KeyCode, KeyEventKind};
+ 
+ const ESC: &str = "\x1b";
+ const CHUNK: usize = 4096;
+@@ -363,20 +362,15 @@ fn ioctl_cell_pixels() -> Option<(u16, u16)> {
+     None
+ }
+ 
++#[cfg(unix)]
+ fn query_cell_pixels() -> Option<(u16, u16)> {
+     let (cols, rows) = crossterm::terminal::size().ok()?;
+     if cols == 0 || rows == 0 {
+         return None;
+     }
+-    // windows-port: skip the `CSI 14 t` pixel-size query on non-unix for the
+-    // same reason as probe_kitty_graphics (reply can't be drained → would leak
+-    // into the pane). The empty read below then yields None → default cell.
+-    #[cfg(unix)]
+-    {
+-        let mut stdout = std::io::stdout();
+-        let _ = write!(stdout, "\x1b[14t");
+-        let _ = stdout.flush();
+-    }
++    let mut stdout = std::io::stdout();
++    let _ = write!(stdout, "\x1b[14t");
++    let _ = stdout.flush();
+     let bytes = read_stdin_for(Duration::from_millis(120));
+     let response = String::from_utf8_lossy(&bytes);
+     let start = response.find("\x1b[4;")?;
+@@ -388,6 +382,71 @@ fn query_cell_pixels() -> Option<(u16, u16)> {
+     Some((((width / cols as u32).max(1)) as u16, ((height / rows as u32).max(1)) as u16))
+ }
+ 
++/// windows-port: `CSI 14 t` can't be used here the way Unix does — draining
++/// its reply needs `read_stdin_for`, a poll(2)-based stub that's Unix-only
++/// (see `probe_kitty_graphics`'s note). Windows Terminal instead answers
++/// `CSI 16 t` (cell size in pixels, no division by cols/rows needed), which
++/// it has supported since 1.22 alongside Sixel — real-machine-probed on WT
++/// 1.24: the reply arrives as individual `crossterm::event::Event::Key` char
++/// presses (ConPTY has no raw byte stream to poll(2) over), assembling to
++/// `[6;<height>;<width>t`. Draining via `crossterm::event::poll`/`read`
++/// works here (unlike the DA1/kitty probes) because this call site runs
++/// after alternate screen/raw mode but before the input thread starts, so
++/// there's nothing else reading stdin to race or leak into.
++#[cfg(windows)]
++fn query_cell_pixels() -> Option<(u16, u16)> {
++    let mut stdout = std::io::stdout();
++    let _ = write!(stdout, "\x1b[16t");
++    let _ = stdout.flush();
++    parse_csi_16t_reply(&drain_windows_reply(Duration::from_millis(200)))
++}
++
++/// Parses a `CSI 16 t` reply (`[6;<height>;<width>t`, ESC already stripped
++/// by `drain_windows_reply`) into `(width, height)` pixels-per-cell.
++#[cfg(windows)]
++fn parse_csi_16t_reply(response: &str) -> Option<(u16, u16)> {
++    let start = response.find("[6;")?;
++    let tail = &response[start + 3..];
++    let end = tail.find('t')?;
++    let mut parts = tail[..end].split(';');
++    let height = parts.next()?.parse::<u16>().ok()?;
++    let width = parts.next()?.parse::<u16>().ok()?;
++    (height > 0 && width > 0).then_some((width, height))
++}
++
++#[cfg(not(any(unix, windows)))]
++fn query_cell_pixels() -> Option<(u16, u16)> {
++    None
++}
++
++/// Collects `crossterm` key-press characters until `[6;...t` is complete or
++/// `timeout` elapses, for parsing a `CSI 16 t` reply. Non-character events
++/// (resize, stray key-up, etc.) seen in the same window are discarded, same
++/// tradeoff the Unix probes already make at this startup call site.
++#[cfg(windows)]
++fn drain_windows_reply(timeout: Duration) -> String {
++    let deadline = Instant::now() + timeout;
++    let mut out = String::new();
++    loop {
++        let remaining = deadline.saturating_duration_since(Instant::now());
++        if remaining.is_zero() {
++            break;
++        }
++        let Ok(true) = crossterm::event::poll(remaining) else { break };
++        let Ok(event) = crossterm::event::read() else { break };
++        if let Event::Key(key) = event
++            && key.kind == KeyEventKind::Press
++            && let KeyCode::Char(c) = key.code
++        {
++            out.push(c);
++            if c == 't' && out.contains("[6;") {
++                break;
++            }
++        }
++    }
++    out
++}
++
+ #[cfg(unix)]
+ fn read_stdin_for(timeout: Duration) -> Vec<u8> {
+     let start = Instant::now();
+@@ -439,6 +498,30 @@ fn find_da1(bytes: &[u8]) -> Option<usize> {
+ mod tests {
+     use super::*;
+ 
++    #[cfg(windows)]
++    #[test]
++    fn parses_csi_16t_reply_into_width_height_pixels() {
++        // Real-machine-probed reply on Windows Terminal 1.24: crossterm
++        // hands back the chars one at a time with the leading ESC already
++        // gone, assembling to this string.
++        assert_eq!(parse_csi_16t_reply("[6;20;10t"), Some((10, 20)));
++    }
++
++    #[cfg(windows)]
++    #[test]
++    fn parses_csi_16t_reply_with_noise_before_and_after() {
++        assert_eq!(parse_csi_16t_reply("garbage[6;32;16tmore"), Some((16, 32)));
++    }
++
++    #[cfg(windows)]
++    #[test]
++    fn rejects_incomplete_or_zeroed_csi_16t_replies() {
++        assert_eq!(parse_csi_16t_reply(""), None);
++        assert_eq!(parse_csi_16t_reply("[6;20;"), None);
++        assert_eq!(parse_csi_16t_reply("[6;0;10t"), None);
++        assert_eq!(parse_csi_16t_reply("[6;20;0t"), None);
++    }
++
+     #[test]
+     fn transmits_png_in_quiet_chunks() {
+         let data = format!("{}{}", "a".repeat(4096), "b".repeat(4));
+-- 
+2.53.0.windows.2
+
